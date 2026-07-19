@@ -320,17 +320,12 @@ if st.session_state.get('_pending_menu') is not None:
 
 st.set_page_config(page_title="Afzal Store", layout="wide")
 
-# ==================== SECURITY GATE DISABLED FOR CLOUD ====================
-# if not security_gate.enforce_security_gate():
-#     st.stop()
-# if security_gate.is_admin_request():
-#     security_gate.show_admin_panel()
-#     st.stop()
-
-# if security_gate.is_admin_request():
-#     security_gate.show_admin_panel()
-#     st.stop()
-
+# ==================== CLOUD KEY SECURITY ====================
+if st.query_params.get("key", "") != "afzal786":
+    st.markdown("<h2 style='text-align:center; color:red; margin-top:100px;'>🔒 Access Denied</h2>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align:center;'>Sahi Key ke sath link open karo</p>", unsafe_allow_html=True)
+    st.stop()
+# ============================================================
 # ==================== GOOGLE DRIVE 2-WAY SYNC ====================
 # Har rerun par call karna safe hai - khud hi throttle karta hai (25 sec), is
 # liye zyada tar calls Drive tak pahonchay bagair hi turant return ho jati hain.
