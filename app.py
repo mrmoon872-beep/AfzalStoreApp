@@ -23,6 +23,30 @@ import pwa_setup
 import security_gate
 import sync_manager
 
+# ==================== FAST CLOUD SECURITY (Remembers Device) ====================
+
+if "auth_ok" not in st.session_state:
+    st.session_state.auth_ok = False
+
+# Link se key check
+if st.query_params.get("key", "") == "afzal786":
+    st.session_state.auth_ok = True
+    st.query_params.clear()
+    st.rerun()
+
+if not st.session_state.auth_ok:
+    st.markdown("<h2 style='text-align:center; color:red; margin-top:80px;'>🔒 Afzal Store Locked</h2>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align:center;'>Neeche password likho (sirf 1 baar)</p>", unsafe_allow_html=True)
+    pwd = st.text_input("Password", type="password")
+    if st.button("Unlock"):
+        if pwd == "afzal786":
+            st.session_state.auth_ok = True
+            st.rerun()
+        else:
+            st.error("Galat password")
+    st.stop()
+# ===============================================================================
+
 # Database Setup
 DB_FILE = 'afzal_store.db'
 BACKUP_FOLDER = 'Backup'
