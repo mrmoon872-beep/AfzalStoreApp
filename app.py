@@ -320,16 +320,16 @@ if st.session_state.get('_pending_menu') is not None:
 
 st.set_page_config(page_title="Afzal Store", layout="wide")
 
-# ==================== SECURITY GATE (Master Key + Device Lock) ====================
-# Yeh SABSE PEHLE chalna zaroori hai - kisi bhi page ka content render hone se
-# pehle. Agar block ho jaye to enforce_security_gate() khud st.stop() kar deta
-# hai, is se aage ka koi bhi code (DB, sidebar, pages) kabhi nahi chalta.
-if not security_gate.enforce_security_gate():
-    st.stop()
+# ==================== SECURITY GATE DISABLED FOR CLOUD ====================
+# if not security_gate.enforce_security_gate():
+#     st.stop()
+# if security_gate.is_admin_request():
+#     security_gate.show_admin_panel()
+#     st.stop()
 
-if security_gate.is_admin_request():
-    security_gate.show_admin_panel()
-    st.stop()
+# if security_gate.is_admin_request():
+#     security_gate.show_admin_panel()
+#     st.stop()
 
 # ==================== GOOGLE DRIVE 2-WAY SYNC ====================
 # Har rerun par call karna safe hai - khud hi throttle karta hai (25 sec), is
