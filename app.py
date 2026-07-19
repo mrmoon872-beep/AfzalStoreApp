@@ -320,12 +320,22 @@ if st.session_state.get('_pending_menu') is not None:
 
 st.set_page_config(page_title="Afzal Store", layout="wide")
 
-# ==================== CLOUD KEY SECURITY ====================
-if st.query_params.get("key", "") != "afzal786":
+# ==================== CLOUD KEY SECURITY (HIDDEN) ====================
+if "auth_ok" not in st.session_state:
+    st.session_state.auth_ok = False
+
+# 1. Agar link me key hai to check karo aur foran chupa do
+if st.query_params.get("key", "") == "afzal786":
+    st.session_state.auth_ok = True
+    st.query_params.clear()  # Link se ?key=... foran hata do
+    st.rerun()
+
+# 2. Agar auth nahi hai to rok do
+if not st.session_state.auth_ok:
     st.markdown("<h2 style='text-align:center; color:red; margin-top:100px;'>🔒 Access Denied</h2>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align:center;'>Sahi Key ke sath link open karo</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align:center;'>Sahi link se open karo</p>", unsafe_allow_html=True)
     st.stop()
-# ============================================================
+# ====================================================================
 # ==================== GOOGLE DRIVE 2-WAY SYNC ====================
 # Har rerun par call karna safe hai - khud hi throttle karta hai (25 sec), is
 # liye zyada tar calls Drive tak pahonchay bagair hi turant return ho jati hain.
