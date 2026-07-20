@@ -132,17 +132,22 @@ def is_owner():
 # Admin panel — call when ?admin=true is in the URL
 # ---------------------------------------------------------------------
 def show_admin_panel():
-    d_id = st.query_params.get("d_id")
+    st.markdown("## 🛠 Admin Panel — Device Access Control")
+
     owner = _load_owner()
-
-    if not d_id or owner.get("device_id") != d_id:
-        st.error("Sirf Owner hi Admin Panel dekh sakta hai.")
-        st.stop()
-
-    st.markdown("## 🛠️ Admin Panel — Device Access Control")
-
     pending = _load_pending()
     approved = _load_approved()
+
+    # Agar koi owner nahi hai to pehla device hi owner ban jayega
+    if not owner.get("device_id"):
+        if pending:
+            first_device = pending[0]
+            owner["device_id"] = first_device
+            _save_owner(owner)
+            st.success(f"Owner set: {first_device}")
+        else:
+            st.info("Pehle app ko normal tarike se kholo taaki device ID generate ho, phir yahan aao")
+            st.stop()
 
     st.subheader(f"⏳ Pending Requests ({len(pending)})")
     if not pending:
@@ -153,8 +158,9 @@ def show_admin_panel():
         if col2.button("✅ Approve", key=f"approve_{dev}"):
             pending.remove(dev)
             _save_pending(pending)
-            approved.append(dev)
-            _save_approved(approved)
+            if dev not in approved:
+                approved.append(dev)
+                _save_approved(approved)
             st.rerun()
         if col3.button("❌ Reject", key=f"reject_{dev}"):
             pending.remove(dev)
@@ -173,7 +179,4 @@ def show_admin_panel():
             st.rerun()
 
     st.divider()
-    st.caption(
-        "Mobile chori hone par: uska Device ID upar 'Approved Devices' list mein "
-        "dhoondh kar 'Revoke / Block' dabayein — uska access turant band ho jayega."
-    )
+    st.caption("Mobile chori hone par Approved Devices me se Revoke dabayein")
