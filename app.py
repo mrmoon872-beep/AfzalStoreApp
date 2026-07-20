@@ -20,7 +20,6 @@ from expenses import show_expenses
 from roz_ka_roll_nama import show_roll_nama
 from backup_restore import auto_daily_backup
 import pwa_setup
-import security_gate
 import sync_manager
 
 # Database Setup
@@ -320,18 +319,14 @@ if st.session_state.get('_pending_menu') is not None:
 
 st.set_page_config(page_title="Afzal Store", layout="wide")
 
-# ==================== SECURITY GATE (Owner-Approval Device Lock) ====================
-# Yeh SABSE PEHLE chalna zaroori hai - kisi bhi page ka content render hone se
-# pehle. Agar block/pending/naya-device ho to enforce_security_gate() khud
-# st.stop() kar deta hai, is se aage ka koi bhi code (DB, sidebar, pages)
-# kabhi nahi chalta. Koi shared password/key nahi - sirf owner-approved
-# devices (localStorage token, Drive par allowed_devices.json se check).
-from security_gate import check_device_access, show_admin_panel
-if "admin" in st.query_params:
-    show_admin_panel()
-    st.stop()
-
-if not check_device_access():
+# ==================== SIMPLE SECRET-KEY ACCESS ====================
+# Yeh SABSE PEHLE chalna zaroori hai - kisi bhi page ka content render
+# hone se pehle. Koi device list, koi pending/approval, koi localStorage,
+# koi JS redirect nahi hai - bas ek seedha URL param check, isliye kabhi
+# hang nahi ho sakta.
+ACCESS_KEY = "afzal786"
+if st.query_params.get("key") != ACCESS_KEY:
+    st.markdown("### 🔒 Access Denied - Private App")
     st.stop()
 
 # ==================== GOOGLE DRIVE 2-WAY SYNC ====================
