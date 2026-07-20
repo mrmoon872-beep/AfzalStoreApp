@@ -330,7 +330,13 @@ if not security_gate.enforce_security_gate():
     st.stop()
 
 if security_gate.is_admin_request():
-    security_gate.show_admin_panel()
+    from security_gate import check_device_access, show_admin_panel
+
+if "admin" in st.query_params:
+    show_admin_panel()
+    st.stop()
+
+if not check_device_access():
     st.stop()
 
 # ==================== GOOGLE DRIVE 2-WAY SYNC ====================
