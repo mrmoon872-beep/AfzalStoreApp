@@ -472,6 +472,85 @@ def download_main_db_if_newer(local_db_path="afzal_store.db"):
         return False, f"⚠️ Drive se check nahi ho saka: {e}"
 
 
+# ---------------------------------------------------------------------
+# GENERIC SMALL-FILE SYNC (device_access.json, etc.)
+# Same pattern as the MAIN_DB functions above, but with a customizable
+# Drive filename - so ANY small file (not just the main .db) can be kept
+# in sync across devices/reboots. Used by security_gate.py to persist
+# owner/approved/pending device lists across Streamlit Cloud reboots
+# (local files there get wiped on every reboot/redeploy).
+# ---------------------------------------------------------------------
+def _get_file_id_by_name(service, folder_id, filename):
+    try:
+        results = service.files().list(
+            q=f"name='{filename}' and '{folder_id}' in parents and trashed=false",
+            spaces="drive", fields="files(id, modifiedTime)").execute()
+        files = results.get("files", [])
+        return files[0] if files else None
+    except Exception:
+        return None
+
+
+def upload_json_file_to_drive(local_path, drive_filename):
+    """Chhoti JSON file (jaise device_access.json) Drive par upload/update
+    karta hai. Returns (success: bool, message: str)."""
+    if not is_available():
+        return False, "Google Drive setup mukammal nahi hai."
+    if not os.path.exists(local_path):
+        return False, f"❌ '{local_path}' nahi mili."
+    service = _get_drive_service()
+    if service is None:
+        return False, "❌ Google Drive se connection nahi hai."
+    try:
+        folder_id = _get_or_create_backup_folder(service)
+        if not folder_id:
+            return False, "❌ Drive par folder nahi ban saka."
+        existing = _get_file_id_by_name(service, folder_id, drive_filename)
+        media = MediaFileUpload(local_path, mimetype="application/json", resumable=False)
+        if existing:
+            service.files().update(fileId=existing["id"], media_body=media).execute()
+        else:
+            service.files().create(body={"name": drive_filename, "parents": [folder_id]},
+                                    media_body=media, fields="id").execute()
+        return True, "✅ Sync ho gaya."
+    except Exception as e:
+        return False, f"❌ Sync nahi ho saki: {e}"
+
+
+def download_json_file_if_newer(local_path, drive_filename):
+    """Agar Drive par is naam ki file local se nayi hai to download kar leta
+    hai. Returns (downloaded: bool, message: str). Kabhi crash nahi karta."""
+    if not is_available():
+        return False, "Google Drive setup mukammal nahi hai."
+    service = _get_drive_service()
+    if service is None:
+        return False, "Google Drive se connection nahi hai."
+    try:
+        folder_id = _get_or_create_backup_folder(service)
+        if not folder_id:
+            return False, "Drive folder nahi mila."
+        file_info = _get_file_id_by_name(service, folder_id, drive_filename)
+        if not file_info:
+            return False, "Drive par abhi tak yeh file nahi hai."
+        from datetime import datetime as _dt
+        drive_time = _dt.strptime(file_info["modifiedTime"], "%Y-%m-%dT%H:%M:%S.%fZ")
+        local_time = _dt.utcfromtimestamp(os.path.getmtime(local_path)) if os.path.exists(local_path) else _dt.min
+        if drive_time <= local_time:
+            return False, "Local file already up-to-date."
+        temp_path = local_path + ".drive_tmp"
+        request = service.files().get_media(fileId=file_info["id"])
+        fh = io.FileIO(temp_path, "wb")
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        fh.close()
+        os.replace(temp_path, local_path)
+        return True, "✅ Naya data mil gaya."
+    except Exception as e:
+        return False, f"⚠️ Drive se check nahi ho saka: {e}"
+
+
 def download_backup_from_drive(file_id, dest_path):
     """Chuna hua backup Drive se download kar ke dest_path par save karta hai.
     Returns (success: bool, message: str)."""
