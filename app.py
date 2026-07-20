@@ -326,12 +326,7 @@ st.set_page_config(page_title="Afzal Store", layout="wide")
 # st.stop() kar deta hai, is se aage ka koi bhi code (DB, sidebar, pages)
 # kabhi nahi chalta. Koi shared password/key nahi - sirf owner-approved
 # devices (localStorage token, Drive par allowed_devices.json se check).
-if not security_gate.enforce_security_gate():
-    st.stop()
-
-if security_gate.is_admin_request():
-    from security_gate import check_device_access, show_admin_panel
-
+from security_gate import check_device_access, show_admin_panel
 if "admin" in st.query_params:
     show_admin_panel()
     st.stop()
