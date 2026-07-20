@@ -272,12 +272,24 @@ def show_logo_setting(show_logo_func):
         st.success(success_msg)
         return True
 
+    # 🐛 ASAL HANG BUG YAHAN THA (fix kiya gaya): st.file_uploader ka uploaded
+    # file widget mein "atka" rehta hai jab tak key na badle - is liye pehle
+    # ek photo upload karne ke baad, HAR agle click/interaction par wahi photo
+    # DOBARA compress + save + Drive upload ho rahi thi (bina ruke), jo poori
+    # app ko dheema/hang jaisa bana deta tha. Ab har successful save ke baad
+    # widget ka "key" counter badal dete hain, taake agli render mein woh
+    # bilkul khali/fresh widget ho - purani photo dobara process nahi hoti.
+    if "_upload_reset_counter" not in st.session_state:
+        st.session_state["_upload_reset_counter"] = 0
+    reset_n = st.session_state["_upload_reset_counter"]
+
     col1, col2, col3 = st.columns(3)
     with col1:
         st.markdown("### 🛒 Store Logo")
-        uploaded_logo = st.file_uploader("Naya Logo Upload Karein", type=['png','jpg','jpeg'], key="logo_upload_main")
+        uploaded_logo = st.file_uploader("Naya Logo Upload Karein", type=['png','jpg','jpeg'], key=f"logo_upload_main_{reset_n}")
         if uploaded_logo is not None:
             if _save_compressed_upload(uploaded_logo, LOGO_FILE, "Logo badal gaya!"):
+                st.session_state["_upload_reset_counter"] += 1
                 st.rerun()
         if os.path.exists(LOGO_FILE):
             st.markdown(show_logo_func(width=80, height=90), unsafe_allow_html=True)
@@ -290,9 +302,10 @@ def show_logo_setting(show_logo_func):
 
     with col2:
         st.markdown("### 🐉 Dragon Banner")
-        uploaded_bg = st.file_uploader("Naya Dragon Banner", type=['png','jpg','jpeg'], key="dragon_upload")
+        uploaded_bg = st.file_uploader("Naya Dragon Banner", type=['png','jpg','jpeg'], key=f"dragon_upload_{reset_n}")
         if uploaded_bg is not None:
             if _save_compressed_upload(uploaded_bg, DRAGON_BG_FILE, "Dragon Banner update ho gaya!"):
+                st.session_state["_upload_reset_counter"] += 1
                 st.rerun()
         if os.path.exists(DRAGON_BG_FILE):
             st.image(DRAGON_BG_FILE, width=120)
@@ -310,9 +323,10 @@ def show_logo_setting(show_logo_func):
             with open(SIDEBAR_TYPE_FILE, 'r') as f:
                 current_sb_type_check = f.read().strip()
         if current_sb_type_check == "Photo (Image)":
-            uploaded_sb_bg = st.file_uploader("Sidebar Ke Piche Ki Photo", type=['png','jpg','jpeg'], key="sidebar_img_upload")
+            uploaded_sb_bg = st.file_uploader("Sidebar Ke Piche Ki Photo", type=['png','jpg','jpeg'], key=f"sidebar_img_upload_{reset_n}")
             if uploaded_sb_bg is not None:
                 if _save_compressed_upload(uploaded_sb_bg, SIDEBAR_BG_IMG_FILE, "Sidebar ki background photo lag gayi!"):
+                    st.session_state["_upload_reset_counter"] += 1
                     st.rerun()
             if os.path.exists(SIDEBAR_BG_IMG_FILE):
                 st.image(SIDEBAR_BG_IMG_FILE, width=120)

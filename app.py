@@ -23,30 +23,6 @@ import pwa_setup
 import security_gate
 import sync_manager
 
-# ==================== FAST CLOUD SECURITY (Remembers Device) ====================
-
-if "auth_ok" not in st.session_state:
-    st.session_state.auth_ok = False
-
-# Link se key check
-if st.query_params.get("key", "") == "afzal786":
-    st.session_state.auth_ok = True
-    st.query_params.clear()
-    st.rerun()
-
-if not st.session_state.auth_ok:
-    st.markdown("<h2 style='text-align:center; color:red; margin-top:80px;'>🔒 Afzal Store Locked</h2>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align:center;'>Neeche password likho (sirf 1 baar)</p>", unsafe_allow_html=True)
-    pwd = st.text_input("Password", type="password")
-    if st.button("Unlock"):
-        if pwd == "afzal786":
-            st.session_state.auth_ok = True
-            st.rerun()
-        else:
-            st.error("Galat password")
-    st.stop()
-# ===============================================================================
-
 # Database Setup
 DB_FILE = 'afzal_store.db'
 BACKUP_FOLDER = 'Backup'
@@ -344,25 +320,23 @@ if st.session_state.get('_pending_menu') is not None:
 
 st.set_page_config(page_title="Afzal Store", layout="wide")
 
-# ==================== CLOUD KEY SECURITY (HIDDEN) ====================
-if "auth_ok" not in st.session_state:
-    st.session_state.auth_ok = False
-
-# 1. Agar link me key hai to check karo aur foran chupa do
-if st.query_params.get("key", "") == "afzal786":
-    st.session_state.auth_ok = True
-    st.query_params.clear()  # Link se ?key=... foran hata do
-    st.rerun()
-
-# 2. Agar auth nahi hai to rok do
-if not st.session_state.auth_ok:
-    st.markdown("<h2 style='text-align:center; color:red; margin-top:100px;'>🔒 Access Denied</h2>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align:center;'>Sahi link se open karo</p>", unsafe_allow_html=True)
+# ==================== SECURITY GATE (Owner-Approval Device Lock) ====================
+# Yeh SABSE PEHLE chalna zaroori hai - kisi bhi page ka content render hone se
+# pehle. Agar block/pending/naya-device ho to enforce_security_gate() khud
+# st.stop() kar deta hai, is se aage ka koi bhi code (DB, sidebar, pages)
+# kabhi nahi chalta. Koi shared password/key nahi - sirf owner-approved
+# devices (localStorage token, Drive par allowed_devices.json se check).
+if not security_gate.enforce_security_gate():
     st.stop()
-# ====================================================================
+
+if security_gate.is_admin_request():
+    security_gate.show_admin_panel()
+    st.stop()
+
 # ==================== GOOGLE DRIVE 2-WAY SYNC ====================
-# Har rerun par call karna safe hai - khud hi throttle karta hai (25 sec), is
-# liye zyada tar calls Drive tak pahonchay bagair hi turant return ho jati hain.
+# PERF FIX: run_full_sync() ab andar st.cache_resource(ttl=30) se throttled
+# hai - is call ko har rerun par karna (near-)FREE hai, Drive tak sirf har
+# 30 second mein ek dafa hi pahonchta hai (chahe kitni bhi baar app use ho).
 try:
     _sync_status = sync_manager.run_full_sync(DB_FILE)
     if _sync_status:
