@@ -7,6 +7,7 @@ import streamlit.components.v1 as components
 import camera_ocr
 import google_drive_backup as gdrive
 import image_compression
+import sync_manager
 
 
 def format_quantity(kg_value):
@@ -911,8 +912,9 @@ def show_udhaar_khatta(get_db):
 
                 # Book photo bhi Drive par bhej dete hain (record ke liye)
                 try:
-                    gdrive.upload_photo_to_drive(img_bytes if 'img_bytes' in dir() else book_img.getvalue(),
-                                                  f"udhaar_book_scan_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg")
+                    sync_manager.upload_photo_to_drive_background(
+                        img_bytes if 'img_bytes' in dir() else book_img.getvalue(),
+                        f"udhaar_book_scan_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg")
                 except Exception:
                     pass
 
@@ -1010,7 +1012,8 @@ def show_udhaar_khatta(get_db):
 
                             if photo_bytes:
                                 try:
-                                    gdrive.upload_photo_to_drive(photo_bytes, f"customer_{n_name.strip()}_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg")
+                                    sync_manager.upload_photo_to_drive_background(
+                                        photo_bytes, f"customer_{n_name.strip()}_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg")
                                 except Exception:
                                     pass
                         except Exception:
@@ -1123,8 +1126,8 @@ def show_udhaar_khatta(get_db):
 
                                         if new_uploaded_photo is not None and final_photo:
                                             try:
-                                                import google_drive_backup as gdrive
-                                                gdrive.upload_photo_to_drive(final_photo, f"customer_{up_name.strip()}_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg")
+                                                sync_manager.upload_photo_to_drive_background(
+                                                    final_photo, f"customer_{up_name.strip()}_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg")
                                             except Exception:
                                                 pass
 

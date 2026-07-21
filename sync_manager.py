@@ -89,3 +89,34 @@ def run_full_sync(local_db_path="afzal_store.db"):
         return _throttled_sync_check(local_db_path, 0)
     except Exception:
         return None
+
+
+def _background_photo_upload(photo_bytes, filename, subfolder):
+    """Alag thread mein chalta hai - koi bhi st.* call nahi karta. Isi wajah
+    se agar internet slow ho ya Drive tak pahonchne mein 10-20 second bhi lag
+    jayen, app ka baaki hissa (form save, list refresh) turant chalta rehta
+    hai - kabhi 'hang' nahi hota."""
+    try:
+        import google_drive_backup as gdrive
+        gdrive.upload_photo_to_drive(photo_bytes, filename, subfolder=subfolder)
+    except Exception:
+        pass  # background thread se UI tak koi error kabhi nahi jani chahiye
+
+
+def upload_photo_to_drive_background(photo_bytes, filename, subfolder="Photos"):
+    """PERF FIX: pehle item/customer photo save hone ke turant baad, isi
+    request ke andar (blocking) Google Drive par upload hoti thi - agar us
+    waqt internet slow hota to poora form submit "hang" jaisa lagta tha
+    (kai second tak UI response hi nahi karta tha), jabke local photo already
+    save ho chuki hoti thi. Ab yeh upload ek background thread mein hoti hai:
+    local save turant complete hota hai, Drive upload chup-chaap peeche
+    (kuch second baad) khud ho jati hai. Kabhi exception raise nahi karta."""
+    try:
+        t = threading.Thread(
+            target=_background_photo_upload,
+            args=(photo_bytes, filename, subfolder),
+            daemon=True,
+        )
+        t.start()
+    except Exception:
+        pass

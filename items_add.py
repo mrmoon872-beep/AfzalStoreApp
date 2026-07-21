@@ -407,8 +407,9 @@ def show_items_add():
                                 if compress_msg:
                                     st.caption(compress_msg)
                                 try:
-                                    import google_drive_backup as gdrive
-                                    gdrive.upload_photo_to_drive(compressed_bytes, os.path.basename(photo_path))
+                                    import sync_manager
+                                    sync_manager.upload_photo_to_drive_background(
+                                        compressed_bytes, os.path.basename(photo_path))
                                 except Exception:
                                     pass  # Drive na ho to koi masla nahi, local photo save ho chuki hai
                             else:
@@ -1547,8 +1548,9 @@ Qty: {ir_row['Total_Qty']:g} &nbsp;|&nbsp; Avg Rate: Rs.{ir_row['Avg_Rate']:.0f}
                             if compress_msg:
                                 st.caption(compress_msg)
                             try:
-                                import google_drive_backup as gdrive
-                                gdrive.upload_photo_to_drive(compressed_bytes, os.path.basename(photo_path))
+                                import sync_manager
+                                sync_manager.upload_photo_to_drive_background(
+                                    compressed_bytes, os.path.basename(photo_path))
                             except Exception:
                                 pass
                         else:
