@@ -5,16 +5,6 @@ from datetime import datetime, date, timedelta
 import os
 import base64
 
-# --- MOBILE FIX START ---
-params = st.query_params
-k = params.get("key", "")
-if isinstance(k, list):
-    k = k[0] if len(k) > 0 else ""
-# key check abhi band hai taake mobile pe khule
-# if k!= "afzal786":
-# st.error("Access Denied")
-# st.stop()
-# --- MOBILE FIX END ---
 # Purani files import
 from items_add import show_items_add
 from udhaar_khatta import show_udhaar_khatta
@@ -328,16 +318,6 @@ if st.session_state.get('_pending_menu') is not None:
     st.session_state.menu = st.session_state.pop('_pending_menu')
 
 st.set_page_config(page_title="Afzal Store", layout="wide")
-
-# ==================== SIMPLE SECRET-KEY ACCESS ====================
-# Yeh SABSE PEHLE chalna zaroori hai - kisi bhi page ka content render
-# hone se pehle. Koi device list, koi pending/approval, koi localStorage,
-# koi JS redirect nahi hai - bas ek seedha URL param check, isliye kabhi
-# hang nahi ho sakta.
-ACCESS_KEY = "afzal786"
-if st.query_params.get("key") != ACCESS_KEY:
-    st.markdown("### 🔒 Access Denied - Private App")
-    st.stop()
 
 # ==================== GOOGLE DRIVE 2-WAY SYNC ====================
 # PERF FIX: run_full_sync() ab andar st.cache_resource(ttl=30) se throttled
