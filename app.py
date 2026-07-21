@@ -5,6 +5,16 @@ from datetime import datetime, date, timedelta
 import os
 import base64
 
+# --- MOBILE FIX START ---
+params = st.query_params
+k = params.get("key", "")
+if isinstance(k, list):
+    k = k[0] if len(k) > 0 else ""
+# key check abhi band hai taake mobile pe khule
+# if k!= "afzal786":
+# st.error("Access Denied")
+# st.stop()
+# --- MOBILE FIX END ---
 # Purani files import
 from items_add import show_items_add
 from udhaar_khatta import show_udhaar_khatta
