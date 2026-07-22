@@ -27,6 +27,85 @@ DRIVE_FOLDER_NAME = "AfzalStore_Backups"
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]  # sirf app ki apni files - poori Drive nahi
 
 
+# ---------------------------------------------------------------------
+# CLOUD BOOTSTRAP: Streamlit Cloud par client_secret.json file GitHub par
+# daalna theek nahi (yeh secret hoti hai), is liye is ke bajaye poora JSON
+# Streamlit Secrets mein [gdrive] client_secret_json ke naam se rakha jata
+# hai. Yeh function module load hote hi (sab se pehle) chal kar us secret
+# se ek ASAL client_secret.json file bana deta hai - taake neeche wala
+# purana code (jo hamesha se ek physical file dhoondta hai) bina kisi
+# tabdeeli ke chalta rahe, chahe Local PC ho ya Cloud.
+# ---------------------------------------------------------------------
+def _bootstrap_client_secret_from_secrets():
+    """Streamlit Secrets mein [gdrive] client_secret_json (dict ya JSON-string,
+    dono chalte hain) dhoondta hai aur agar milay to us se client_secret.json
+    file 4 mumkin jagah par bana deta hai:
+        client_secret.json
+        internal/client_secret.json
+        _internal/client_secret.json
+        internal/_internal/client_secret.json
+    (root aur is script ki apni location - dono se relative, taake app kahin
+    se bhi chalayi jaye, file mil jaye.)
+
+    - Agar file kisi jagah pehle se maujood hai, use overwrite nahi karta.
+    - Agar Streamlit hi installed nahi, Secrets available nahi, ya secret
+      ka format ghalat hai - chup-chaap kuch nahi karta, KABHI crash nahi
+      karta (Local PC par yeh function bilkul koi asar nahi dalta)."""
+    try:
+        import streamlit as st
+    except Exception:
+        return  # Streamlit installed hi nahi - plain local/script context
+
+    try:
+        if not hasattr(st, "secrets") or "gdrive" not in st.secrets:
+            return
+        raw = st.secrets["gdrive"].get("client_secret_json")
+        if not raw:
+            return
+
+        # Dono format handle karo: dict (TOML table) ya string (triple-quoted JSON)
+        if isinstance(raw, str):
+            secret_dict = json.loads(raw)
+        else:
+            secret_dict = dict(raw)
+
+        here = os.path.dirname(os.path.abspath(__file__))     # jahan yeh script hai
+        parent = os.path.dirname(here)                          # is se ek folder upar
+        bases = {os.getcwd(), here, parent}                     # sab mumkin "root" jagah
+
+        relative_targets = [
+            "client_secret.json",
+            os.path.join("internal", "client_secret.json"),
+            os.path.join("_internal", "client_secret.json"),
+            os.path.join("internal", "_internal", "client_secret.json"),
+        ]
+
+        written_any = False
+        for base in bases:
+            for rel in relative_targets:
+                target = os.path.join(base, rel)
+                try:
+                    if os.path.exists(target):
+                        continue  # pehle se hai - dobara na likho
+                    target_dir = os.path.dirname(target)
+                    if target_dir:
+                        os.makedirs(target_dir, exist_ok=True)
+                    with open(target, "w") as f:
+                        json.dump(secret_dict, f)
+                    written_any = True
+                except OSError:
+                    continue  # is jagah likhne ki ijazat nahi - agli jagah try karo
+        return written_any
+    except Exception:
+        return False  # kisi bhi wajah se secret na parh saka - app crash na ho
+
+
+# App import hote hi ek baar chal jata hai - is ke baad se poora purana
+# file-based code (get_client_secret_path, is_available, connect_to_drive
+# waghera) bilkul pehle jaisa hi kaam karta hai, chahe Cloud ho ya Local.
+_bootstrap_client_secret_from_secrets()
+
+
 def _resolve_path(filename):
     """`filename` ko kai mumkin jagah dhoondta hai - is module (_internal/) ke
     andar, is se ek folder upar (root - jahan README_FINAL.txt ke mutabiq
