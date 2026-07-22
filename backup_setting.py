@@ -64,19 +64,41 @@ def show_backup_restore():
         st.markdown("### ☁️ Google Drive Par Auto Backup")
         st.caption("Agar computer chori ho jaye, kharab ho jaye ya crash ho jaye, tab bhi aapka data Google Drive se wapas mil sakta hai.")
 
+        # PERF/BUG FIX: pehle yahan seedha os.path.exists(client_secret.json)
+        # check hota tha - is se Streamlit Cloud par hamesha "file nahi mili"
+        # warning aati thi, chahe Secrets mein valid 'gdrive_token' kyun na ho.
+        # is_available() already dono cases handle karta hai (local file YA
+        # cloud token) - isi liye ab sirf isi ko istemal kar rahe hain.
+        is_cloud_token = gdrive._has_cloud_token()
+
         if not gdrive.GOOGLE_LIBS_AVAILABLE:
             st.warning(
                 "⚠️ Google Drive backup abhi available nahi hai kyunke zaroori packages install nahi hain.\n\n"
                 "Terminal/CMD mein yeh chalayein, phir app restart karein:\n\n"
                 "`pip install google-auth-oauthlib google-api-python-client google-auth-httplib2`"
             )
-        elif not os.path.exists(gdrive.get_client_secret_path()):
-            st.warning(f"⚠️ '{gdrive.CLIENT_SECRET_FILE}' file root ya _internal, kisi folder mein bhi nahi mili. Pehle yeh file wahan rakhein.")
+        elif not gdrive.is_available():
+            st.warning(
+                f"⚠️ '{gdrive.CLIENT_SECRET_FILE}' file root ya _internal, kisi folder mein bhi nahi mili, "
+                "aur Streamlit Secrets mein bhi koi 'gdrive_token' nahi mila. In mein se koi ek tareeqa apnayein."
+            )
         else:
             connected = gdrive.is_connected()
 
             if connected:
                 st.success("✅ Google Drive Connected Hai")
+            elif is_cloud_token:
+                # Cloud par 'gdrive_token' Secret maujood hai lekin invalid/expire
+                # ho chuka hai. Yahan HARGIZ "Connect Karo" button nahi dikhana -
+                # woh connect_to_drive() ko call karta hai jo local browser kholne
+                # ki koshish karta hai, aur Cloud (headless server) par isi wajah
+                # se "could not locate runnable browser" wala error aata hai.
+                st.error(
+                    "❌ Streamlit Secrets mein 'gdrive_token' maujood hai lekin ab valid/refreshable nahi hai.\n\n"
+                    "Apne PC (local) par ek baar dobara 'Connect Google Drive' karein, phir jo nayi "
+                    "drive_token.json banegi uska poora content Streamlit Cloud ke Secrets mein "
+                    "'gdrive_token' ke naam se update kar dein."
+                )
             else:
                 st.info("🔌 Google Drive abhi connect nahi hai.")
                 if st.button("🔗 Google Drive Connect Karo", type="primary"):
