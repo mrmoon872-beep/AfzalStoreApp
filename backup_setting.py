@@ -102,7 +102,7 @@ def show_backup_restore():
             else:
                 st.info("🔌 Google Drive abhi connect nahi hai.")
                 if st.button("🔗 Google Drive Connect Karo", type="primary"):
-                    with st.spinner("Browser mein Google login khul raha hai... Wahan apna account allow karein."):
+                    with st.spinner("Apna CMD/Terminal window check karein - wahan ek link print hui hai. Usay copy kar ke browser mein kholein aur account allow karein..."):
                         success, message = gdrive.connect_to_drive()
                     if success:
                         st.success(message)

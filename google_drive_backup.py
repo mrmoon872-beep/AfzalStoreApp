@@ -218,7 +218,25 @@ def connect_to_drive():
 
     try:
         flow = InstalledAppFlow.from_client_secrets_file(secret_path, SCOPES)
-        creds = flow.run_local_server(port=0)
+        # BUG FIX: pehle flow.run_local_server(port=0) khud webbrowser.open()
+        # try karta tha - agar PC par default-browser association kharab ho
+        # (ya koi bhi wajah se Python browser auto-launch na kar sake) to
+        # yeh "could not locate runnable browser" wala exception deta tha
+        # aur poori Connect flow fail ho jati thi. Ab open_browser=False se
+        # yeh auto-launch bilkul try hi nahi karta - is ke bajaye ek link
+        # TERMINAL/CMD window mein print hoti hai (jahan se `streamlit run
+        # app.py` chalaya tha) jise aap khud copy kar ke kisi bhi browser
+        # mein paste kar sakte hain. Isi wajah se yeh error class ab kabhi
+        # nahi aa sakta.
+        creds = flow.run_local_server(
+            port=0,
+            open_browser=False,
+            authorization_prompt_message=(
+                "\n👉 Apna CMD/Terminal window dekhein - wahan ek link print hui hai.\n"
+                "Us link ko copy kar ke apne kisi bhi browser mein paste karein,\n"
+                "apna Google account select/allow karein, phir yahan wapas aa jayein.\n"
+            ),
+        )
         with open(TOKEN_FILE, "w") as token:
             token.write(creds.to_json())
         return True, "✅ Google Drive kamyabi se connect ho gayi!"
