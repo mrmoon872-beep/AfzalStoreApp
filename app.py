@@ -20,10 +20,26 @@ from expenses import show_expenses
 from roz_ka_roll_nama import show_roll_nama
 from backup_restore import auto_daily_backup
 import pwa_setup
+import security_gate
 import sync_manager
 
 # Database Setup
-DB_FILE = 'afzal_store.db'
+# PATH FIX: pehle 'afzal_store.db' hamesha current working directory ke
+# hisaab se dhoondhi jati thi - agar app _internal/ ke bahar se chalayi
+# jaye (ya iske bar-aks) to file 'nahi milti'. Ab dono mumkin jagah check
+# hoti hain - jahan asal file maujood ho wahi istemal hoti hai.
+def _resolve_db_file():
+    candidates = [
+        'afzal_store.db',
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), 'afzal_store.db'),
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return candidates[0]  # koi bhi na mile to yahin nayi database ban jayegi
+
+
+DB_FILE = _resolve_db_file()
 BACKUP_FOLDER = 'Backup'
 LOGO_FILE = 'logo.png'
 GOLDEN_TEXT_FILE = 'golden_text_setting.txt'
@@ -319,10 +335,20 @@ if st.session_state.get('_pending_menu') is not None:
 
 st.set_page_config(page_title="Afzal Store", layout="wide")
 
+# ==================== SECURITY GATE (Master Key + Device Lock) ====================
+# Yeh SABSE PEHLE chalna zaroori hai - kisi bhi page ka content render hone se
+# pehle. Agar block ho jaye to enforce_security_gate() khud st.stop() kar deta
+# hai, is se aage ka koi bhi code (DB, sidebar, pages) kabhi nahi chalta.
+if not security_gate.enforce_security_gate():
+    st.stop()
+
+if security_gate.is_admin_request():
+    security_gate.show_admin_panel()
+    st.stop()
+
 # ==================== GOOGLE DRIVE 2-WAY SYNC ====================
-# PERF FIX: run_full_sync() ab andar st.cache_resource(ttl=30) se throttled
-# hai - is call ko har rerun par karna (near-)FREE hai, Drive tak sirf har
-# 30 second mein ek dafa hi pahonchta hai (chahe kitni bhi baar app use ho).
+# Har rerun par call karna safe hai - khud hi throttle karta hai (25 sec), is
+# liye zyada tar calls Drive tak pahonchay bagair hi turant return ho jati hain.
 try:
     _sync_status = sync_manager.run_full_sync(DB_FILE)
     if _sync_status:

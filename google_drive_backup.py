@@ -26,6 +26,32 @@ SETTINGS_FILE = "drive_backup_settings.json"
 DRIVE_FOLDER_NAME = "AfzalStore_Backups"
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]  # sirf app ki apni files - poori Drive nahi
 
+
+def _resolve_path(filename):
+    """`filename` ko kai mumkin jagah dhoondta hai - is module (_internal/) ke
+    andar, is se ek folder upar (root - jahan README_FINAL.txt ke mutabiq
+    client_secret.json rakhne ko kaha gaya tha), aur current working
+    directory mein (jahan se `streamlit run` chalaya gaya ho). Isi wajah se
+    'file project folder mein nahi mili' wala error ab nahi aata chahe app
+    kahin se bhi chalayi jaye. Pehli jagah jahan file mil jaye, wahi return
+    hoti hai; kahin na mile to bare filename hi wapas milta hai (taake purana
+    error-message behavior barqarar rahe)."""
+    here = os.path.dirname(os.path.abspath(__file__))   # .../_internal
+    parent = os.path.dirname(here)                        # .../ (root, _internal ke bahar)
+    candidates = [
+        filename,                        # current working directory
+        os.path.join(here, filename),    # _internal/filename
+        os.path.join(parent, filename),  # root/filename
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return filename
+
+
+def get_client_secret_path():
+    return _resolve_path(CLIENT_SECRET_FILE)
+
 # Google libraries optional hain - agar install nahi hain to poori app phir bhi chalti rahegi,
 # sirf Drive backup ka option "unavailable" dikhega (local backup pe koi asar nahi).
 try:
@@ -55,7 +81,7 @@ def is_available():
     """Google Drive backup tabhi available hai jab libraries installed hon AUR
     (a) client_secret.json local file maujood ho (Desktop mode), YA
     (b) Streamlit Secrets mein pehle se token maujood ho (Cloud mode)."""
-    return GOOGLE_LIBS_AVAILABLE and (os.path.exists(CLIENT_SECRET_FILE) or _has_cloud_token())
+    return GOOGLE_LIBS_AVAILABLE and (os.path.exists(get_client_secret_path()) or _has_cloud_token())
 
 
 def load_settings():
@@ -107,11 +133,12 @@ def connect_to_drive():
     mein exact steps hain)."""
     if not GOOGLE_LIBS_AVAILABLE:
         return False, "❌ Google Drive libraries install nahi hain. Terminal mein yeh chalayein:\npip install google-auth-oauthlib google-api-python-client google-auth-httplib2"
-    if not os.path.exists(CLIENT_SECRET_FILE):
-        return False, f"❌ '{CLIENT_SECRET_FILE}' file project folder mein nahi mili. Pehle yeh file yahan rakhein. (Cloud par yeh flow chalti hi nahi - README_CLOUD_SETUP.txt dekhein.)"
+    secret_path = get_client_secret_path()
+    if not os.path.exists(secret_path):
+        return False, f"❌ '{CLIENT_SECRET_FILE}' file root ya _internal folder, kisi mein bhi nahi mili. Pehle yeh file wahan rakhein. (Cloud par yeh flow chalti hi nahi - README_CLOUD_SETUP.txt dekhein.)"
 
     try:
-        flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRET_FILE, SCOPES)
+        flow = InstalledAppFlow.from_client_secrets_file(secret_path, SCOPES)
         creds = flow.run_local_server(port=0)
         with open(TOKEN_FILE, "w") as token:
             token.write(creds.to_json())
@@ -211,7 +238,7 @@ def upload_backup_to_drive(local_db_path="afzal_store.db"):
         media = MediaFileUpload(local_db_path, mimetype="application/octet-stream", resumable=True)
         service.files().create(body=file_metadata, media_body=media, fields="id").execute()
 
-        _cleanup_old_drive_backups(service, folder_id, keep_latest=30)
+        _cleanup_old_drive_backups(service, folder_id, keep_latest=20)
         return True, f"✅ Google Drive par backup ho gaya: {drive_filename}"
     except Exception as e:
         msg = str(e).lower()
@@ -472,85 +499,6 @@ def download_main_db_if_newer(local_db_path="afzal_store.db"):
         return False, f"⚠️ Drive se check nahi ho saka: {e}"
 
 
-# ---------------------------------------------------------------------
-# GENERIC SMALL-FILE SYNC (device_access.json, etc.)
-# Same pattern as the MAIN_DB functions above, but with a customizable
-# Drive filename - so ANY small file (not just the main .db) can be kept
-# in sync across devices/reboots. Used by security_gate.py to persist
-# owner/approved/pending device lists across Streamlit Cloud reboots
-# (local files there get wiped on every reboot/redeploy).
-# ---------------------------------------------------------------------
-def _get_file_id_by_name(service, folder_id, filename):
-    try:
-        results = service.files().list(
-            q=f"name='{filename}' and '{folder_id}' in parents and trashed=false",
-            spaces="drive", fields="files(id, modifiedTime)").execute()
-        files = results.get("files", [])
-        return files[0] if files else None
-    except Exception:
-        return None
-
-
-def upload_json_file_to_drive(local_path, drive_filename):
-    """Chhoti JSON file (jaise device_access.json) Drive par upload/update
-    karta hai. Returns (success: bool, message: str)."""
-    if not is_available():
-        return False, "Google Drive setup mukammal nahi hai."
-    if not os.path.exists(local_path):
-        return False, f"❌ '{local_path}' nahi mili."
-    service = _get_drive_service()
-    if service is None:
-        return False, "❌ Google Drive se connection nahi hai."
-    try:
-        folder_id = _get_or_create_backup_folder(service)
-        if not folder_id:
-            return False, "❌ Drive par folder nahi ban saka."
-        existing = _get_file_id_by_name(service, folder_id, drive_filename)
-        media = MediaFileUpload(local_path, mimetype="application/json", resumable=False)
-        if existing:
-            service.files().update(fileId=existing["id"], media_body=media).execute()
-        else:
-            service.files().create(body={"name": drive_filename, "parents": [folder_id]},
-                                    media_body=media, fields="id").execute()
-        return True, "✅ Sync ho gaya."
-    except Exception as e:
-        return False, f"❌ Sync nahi ho saki: {e}"
-
-
-def download_json_file_if_newer(local_path, drive_filename):
-    """Agar Drive par is naam ki file local se nayi hai to download kar leta
-    hai. Returns (downloaded: bool, message: str). Kabhi crash nahi karta."""
-    if not is_available():
-        return False, "Google Drive setup mukammal nahi hai."
-    service = _get_drive_service()
-    if service is None:
-        return False, "Google Drive se connection nahi hai."
-    try:
-        folder_id = _get_or_create_backup_folder(service)
-        if not folder_id:
-            return False, "Drive folder nahi mila."
-        file_info = _get_file_id_by_name(service, folder_id, drive_filename)
-        if not file_info:
-            return False, "Drive par abhi tak yeh file nahi hai."
-        from datetime import datetime as _dt
-        drive_time = _dt.strptime(file_info["modifiedTime"], "%Y-%m-%dT%H:%M:%S.%fZ")
-        local_time = _dt.utcfromtimestamp(os.path.getmtime(local_path)) if os.path.exists(local_path) else _dt.min
-        if drive_time <= local_time:
-            return False, "Local file already up-to-date."
-        temp_path = local_path + ".drive_tmp"
-        request = service.files().get_media(fileId=file_info["id"])
-        fh = io.FileIO(temp_path, "wb")
-        downloader = MediaIoBaseDownload(fh, request)
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
-        fh.close()
-        os.replace(temp_path, local_path)
-        return True, "✅ Naya data mil gaya."
-    except Exception as e:
-        return False, f"⚠️ Drive se check nahi ho saka: {e}"
-
-
 def download_backup_from_drive(file_id, dest_path):
     """Chuna hua backup Drive se download kar ke dest_path par save karta hai.
     Returns (success: bool, message: str)."""
@@ -597,3 +545,120 @@ def auto_drive_backup_if_due(local_db_path="afzal_store.db"):
         return success
     except Exception:
         return False
+def list_drive_backups():
+    try:
+        service = _get_drive_service()
+        if not service:
+            return []
+        results = service.files().list(
+            q="trashed=false", 
+            pageSize=20, 
+            fields="files(id, name, size, modifiedTime)"
+        ).execute()
+        files = results.get('files', [])
+        backups = []
+        for f in files:
+            if 'afzal' in f['name'].lower() or 'backup' in f['name'].lower() or '.db' in f['name'].lower():
+                backups.append(f)
+        return backups
+    except Exception as e:
+        print(f"List backup error: {e}")
+        return []
+
+# ---------------------------------------------------------------------
+# EXACT-NAMED WRAPPERS (auto_sync_from_drive / upload_backup)
+# app.py inhi 2 naamon se call karta hai. Yeh naye code nahi likhtay -
+# upar wale already-tested functions (download_main_db_if_newer,
+# upload_backup_to_drive) ko hi dobara istemal karte hain, taake
+# working logic dobara na likhna paray.
+# ---------------------------------------------------------------------
+import threading as _threading
+
+_DB_CANDIDATE_NAMES = ["afzal_store.db"]
+_last_upload_thread = {"running": False}
+
+
+def _resolve_db_path(local_db_path="afzal_store.db"):
+    """User ne bataya ke DB kabhi root mein hoti hai, kabhi _internal/ mein -
+    dono jagah check karta hai, jahan file waqai maujood ho wahi istemal
+    karta hai."""
+    if os.path.exists(local_db_path):
+        return local_db_path
+    return _resolve_path(local_db_path)
+
+
+def auto_sync_from_drive(local_db_path="afzal_store.db", min_diff_minutes=2):
+    """App start hote hi call karne ke liye. Drive par maujood MAIN database
+    ka waqt local file se compare karta hai - agar Drive wali file
+    `min_diff_minutes` se zyada nayi hai, to download kar ke local file
+    replace kar deta hai. Chota farq (clock skew waghera) ignore hota hai
+    taake har rerun par fuzool download na ho. Returns (downloaded: bool,
+    message: str) - kabhi crash nahi karta, Drive na ho to chup-chaap
+    (False, message) deta hai."""
+    resolved_path = _resolve_db_path(local_db_path)
+
+    if not is_available():
+        return False, "Google Drive setup mukammal nahi hai."
+    service = _get_drive_service()
+    if service is None:
+        return False, "Google Drive se connection nahi hai."
+
+    try:
+        folder_id = _get_or_create_backup_folder(service)
+        if not folder_id:
+            return False, "Drive folder nahi mila."
+        file_info = _get_main_db_file_id(service, folder_id)
+        if not file_info:
+            return False, "Drive par abhi tak koi database nahi hai (pehli baar)."
+
+        from datetime import datetime as _dt, timedelta as _td
+        drive_time = _dt.strptime(file_info["modifiedTime"], "%Y-%m-%dT%H:%M:%S.%fZ")
+        local_time = (_dt.utcfromtimestamp(os.path.getmtime(resolved_path))
+                      if os.path.exists(resolved_path) else _dt.min)
+
+        if drive_time <= local_time + _td(minutes=min_diff_minutes):
+            return False, "Local database already up-to-date hai (ya farq bohot chota hai)."
+
+        temp_path = resolved_path + ".drive_download_tmp"
+        request = service.files().get_media(fileId=file_info["id"])
+        fh = io.FileIO(temp_path, "wb")
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        fh.close()
+
+        if os.path.exists(resolved_path):
+            try:
+                import shutil
+                shutil.copy2(resolved_path, resolved_path + ".before_drive_sync.bak")
+            except OSError:
+                pass
+        os.replace(temp_path, resolved_path)
+        return True, "✅ Naya data Google Drive se mil gaya (kisi doosri device se aaya hoga)."
+    except Exception as e:
+        return False, f"⚠️ Drive se check nahi ho saka: {e}"
+
+
+def _background_upload_backup(local_db_path):
+    """Alag thread mein chalta hai - koi st.* call nahi karta, is liye
+    kabhi UI freeze nahi karta chahe internet kitna hi slow kyun na ho."""
+    try:
+        upload_backup_to_drive(local_db_path)
+    except Exception:
+        pass
+    finally:
+        _last_upload_thread["running"] = False
+
+
+def upload_backup(local_db_path="afzal_store.db"):
+    """Har data-save ke baad (Nayi Sale, Udhaar, Items Add, waghera) call
+    karne ke liye. Turant return hota hai - asal upload background thread
+    mein hoti hai, is liye form submit/save button kabhi 'hang' nahi hota.
+    Sirf akhri 20 backups Drive par rakhta hai (purani khud delete)."""
+    resolved_path = _resolve_db_path(local_db_path)
+    if _last_upload_thread["running"]:
+        return  # pehle se ek upload chal rahi hai - dobara shuru na karo
+    _last_upload_thread["running"] = True
+    t = _threading.Thread(target=_background_upload_backup, args=(resolved_path,), daemon=True)
+    t.start()

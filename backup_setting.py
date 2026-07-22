@@ -70,8 +70,8 @@ def show_backup_restore():
                 "Terminal/CMD mein yeh chalayein, phir app restart karein:\n\n"
                 "`pip install google-auth-oauthlib google-api-python-client google-auth-httplib2`"
             )
-        elif not os.path.exists(gdrive.CLIENT_SECRET_FILE):
-            st.warning(f"⚠️ '{gdrive.CLIENT_SECRET_FILE}' file project folder mein nahi mili. Pehle yeh file yahan (afzal_store.db ke sath) rakhein.")
+        elif not os.path.exists(gdrive.get_client_secret_path()):
+            st.warning(f"⚠️ '{gdrive.CLIENT_SECRET_FILE}' file root ya _internal, kisi folder mein bhi nahi mili. Pehle yeh file wahan rakhein.")
         else:
             connected = gdrive.is_connected()
 
