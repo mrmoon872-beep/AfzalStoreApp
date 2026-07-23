@@ -101,14 +101,40 @@ def show_backup_restore():
                 )
             else:
                 st.info("🔌 Google Drive abhi connect nahi hai.")
-                if st.button("🔗 Google Drive Connect Karo", type="primary"):
-                    with st.spinner("Apna CMD/Terminal window check karein - wahan ek link print hui hai. Usay copy kar ke browser mein kholein aur account allow karein..."):
-                        success, message = gdrive.connect_to_drive()
-                    if success:
-                        st.success(message)
-                        st.rerun()
-                    else:
-                        st.error(message)
+
+                if not st.session_state.get("_gdrive_connecting"):
+                    if st.button("🔗 Google Drive Connect Karo", type="primary"):
+                        auth_url, err = gdrive.start_drive_connect()
+                        if err:
+                            st.error(err)
+                        else:
+                            st.session_state["_gdrive_connecting"] = True
+                            st.session_state["_gdrive_auth_url"] = auth_url
+                            st.rerun()
+                else:
+                    st.link_button(
+                        "👉 Yahan Click Kar Ke Google Account Allow Karein",
+                        st.session_state.get("_gdrive_auth_url", ""),
+                        type="primary",
+                    )
+                    st.caption("Upar wala link kisi bhi browser mein khulega - apna Google account select/allow karein, phir neeche wala button dabayein.")
+                    col_check, col_cancel = st.columns(2)
+                    with col_check:
+                        if st.button("✅ Maine Allow Kar Diya - Ab Check Karo"):
+                            success, message = gdrive.poll_drive_connect()
+                            if success:
+                                st.session_state["_gdrive_connecting"] = False
+                                st.success(message)
+                                st.rerun()
+                            elif message:
+                                st.error(message)
+                                st.session_state["_gdrive_connecting"] = False
+                            else:
+                                st.warning("Abhi tak allow hota nazar nahi aa raha - pehle upar wala link click kar ke allow karein, phir dobara yeh button dabayein.")
+                    with col_cancel:
+                        if st.button("❌ Cancel"):
+                            st.session_state["_gdrive_connecting"] = False
+                            st.rerun()
 
             if connected:
                 st.divider()

@@ -18,6 +18,7 @@ karega - sirf ek friendly False/None return karega jise calling code handle kart
 
 import os
 import json
+import threading
 from datetime import datetime
 
 CLIENT_SECRET_FILE = "client_secret.json"
@@ -196,6 +197,104 @@ def is_connected():
         return creds is not None and (creds.valid or creds.refresh_token is not None)
     except Exception:
         return False
+
+
+_connect_state = {"flow": None, "result": None, "port": 8765}
+
+
+def start_drive_connect():
+    """PEHLE connect_to_drive() terminal mein ek link print karta tha - agar
+    user terminal window dekh hi na paye (ya woh chhupi/band ho) to woh
+    hamesha atka rehta tha. Ab yeh function turant ek clickable authorization
+    URL wapas deta hai jo seedha Streamlit UI mein dikhayi ja sakti hai - kisi
+    terminal ki zaroorat nahi. Background mein ek chhota local server (fixed
+    port par) Google ke jawab (redirect) ka intezar karta hai.
+    Returns (auth_url, error_message)."""
+    if not GOOGLE_LIBS_AVAILABLE:
+        return None, "❌ Google Drive libraries install nahi hain. Terminal mein yeh chalayein:\npip install google-auth-oauthlib google-api-python-client google-auth-httplib2"
+    secret_path = get_client_secret_path()
+    if not os.path.exists(secret_path):
+        return None, f"❌ '{CLIENT_SECRET_FILE}' file root ya _internal folder, kisi mein bhi nahi mili."
+
+    import http.server
+    import urllib.parse
+
+    try:
+        port = _connect_state["port"]
+        flow = InstalledAppFlow.from_client_secrets_file(secret_path, SCOPES)
+        # Fixed port istemal kar rahe hain (random port=0 ki jagah) taake auth
+        # URL abhi, is waqt bana sakein - Google ke "Desktop app" type client
+        # kisi bhi localhost port ko automatically allow karte hain, is liye
+        # Cloud Console mein ismein kuch add karne ki zaroorat nahi.
+        flow.redirect_uri = f"http://localhost:{port}/"
+        auth_url, _ = flow.authorization_url(access_type="offline", prompt="consent")
+
+        result_holder = {"code": None, "done": False, "error": None}
+
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                if "code" in qs:
+                    result_holder["code"] = qs["code"][0]
+                elif "error" in qs:
+                    result_holder["error"] = qs["error"][0]
+                self.send_response(200)
+                self.send_header("Content-type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(
+                    "<html><body style='font-family:sans-serif;padding:40px'>"
+                    "<h2>✅ Ho gaya! Ab is tab ko band kar dein aur Afzal Store app par wapas jayein.</h2>"
+                    "</body></html>".encode("utf-8")
+                )
+                result_holder["done"] = True
+
+            def log_message(self, *args):
+                pass  # console spam mat karo
+
+        httpd = http.server.HTTPServer(("localhost", port), _Handler)
+        httpd.timeout = 300  # 5 minute tak wait karega, phir chup-chaap ruk jayega
+
+        def _serve():
+            try:
+                httpd.handle_request()
+            except Exception as e:
+                result_holder["error"] = str(e)
+
+        t = threading.Thread(target=_serve, daemon=True)
+        t.start()
+
+        _connect_state["flow"] = flow
+        _connect_state["result"] = result_holder
+        return auth_url, None
+    except Exception as e:
+        return None, f"❌ {e}"
+
+
+def poll_drive_connect():
+    """Streamlit ke 'Check Karo' button se call hota hai - agar user ne link
+    khol kar Allow kar diya hai to token save kar deta hai. Returns
+    (success: bool, message_or_None). message None ho aur success False ho
+    to iska matlab hai 'abhi tak wait ho raha hai, dobara try karein'."""
+    flow = _connect_state.get("flow")
+    result_holder = _connect_state.get("result")
+    if not flow or not result_holder:
+        return False, "Pehle 'Google Drive Connect Karo' button dabayein."
+    if not result_holder.get("done"):
+        return False, None
+    if result_holder.get("error"):
+        return False, f"❌ Google ne allow nahi kiya: {result_holder['error']}"
+    if not result_holder.get("code"):
+        return False, "❌ Koi authorization code nahi mila. Dobara koshish karein."
+    try:
+        flow.fetch_token(code=result_holder["code"])
+        creds = flow.credentials
+        with open(TOKEN_FILE, "w") as token:
+            token.write(creds.to_json())
+        _connect_state["flow"] = None
+        _connect_state["result"] = None
+        return True, "✅ Google Drive kamyabi se connect ho gayi!"
+    except Exception as e:
+        return False, f"❌ Token save karne mein masla: {e}"
 
 
 def connect_to_drive():
