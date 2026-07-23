@@ -349,13 +349,14 @@ if security_gate.is_admin_request():
     security_gate.show_admin_panel()
     st.stop()
 
-# ==================== GOOGLE DRIVE 2-WAY SYNC ====================
-# Har rerun par call karna safe hai - khud hi throttle karta hai (25 sec), is
-# liye zyada tar calls Drive tak pahonchay bagair hi turant return ho jati hain.
+# ==================== GOOGLE DRIVE 2-WAY SYNC (100% SILENT) ====================
+# Har rerun par call karna safe hai - khud kabhi block nahi karta (poora kaam
+# ek background thread mein hota hai) aur KABHI koi popup/toast/message nahi
+# dikhata - user ko Dashboard, Nayi Sale, Udhaar Khatta waghera istemal karte
+# waqt is ka bilkul pata nahi chalega. Backup & Restore page khole bagair bhi
+# offline<->online data khud-ba-khud sync hota rehta hai.
 try:
-    _sync_status = sync_manager.run_full_sync(DB_FILE)
-    if _sync_status:
-        st.toast(_sync_status)
+    sync_manager.run_full_sync(DB_FILE)
 except Exception:
     pass  # sync mein koi bhi masla aaye, app kabhi is wajah se na ruke
 

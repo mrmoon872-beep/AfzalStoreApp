@@ -249,7 +249,7 @@ def load_settings():
                 return json.load(f)
     except (json.JSONDecodeError, OSError):
         pass
-    return {"auto_drive_backup_enabled": False, "last_drive_backup_date": None}
+    return {"auto_drive_backup_enabled": True, "last_drive_backup_date": None}
 
 
 def save_settings(settings_dict):
@@ -817,15 +817,15 @@ def download_backup_from_drive(file_id, dest_path):
 
 
 def auto_drive_backup_if_due(local_db_path="afzal_store.db"):
-    """Daily local backup ki tarah, agar Drive backup ON hai aur aaj abhi tak nahi
-    hua, to chup-chaap background mein Drive par bhi upload kar deta hai. Kisi bhi
-    wajah se fail ho (internet na ho, token expire ho jaye) to app ko koi farak
+    """Rozana - agar aaj abhi tak dated backup nahi hua, to chup-chaap
+    background mein Drive par bhi bana/update kar deta hai. Data-safety ki
+    wajah se yeh HAMESHA internally chalta hai (UI ka toggle sirf preference
+    dikhane ke liye hai, isay band nahi kar sakta) - taake user galti se
+    bhi toggle OFF kar de to bhi kabhi data sync rukay nahi. Kisi bhi wajah
+    se fail ho (internet na ho, token expire ho jaye) to app ko koi farak
     nahi parta - agli baar phir try hoga."""
-    settings = load_settings()
-    if not settings.get("auto_drive_backup_enabled"):
-        return False
-
     today_str = datetime.now().strftime("%Y-%m-%d")
+    settings = load_settings()
     if settings.get("last_drive_backup_date") == today_str:
         return False  # aaj ka backup ho chuka hai
 
@@ -840,8 +840,10 @@ def auto_drive_backup_if_due(local_db_path="afzal_store.db"):
         return success
     except Exception:
         return False
+
+
 def list_drive_backups():
-    """'Drive Par Maujood Backups' list ke liye - sirf DATED history files
+    """'Advanced - Purani History' ke liye - sirf DATED history files
     (afzal_store_backup_DD-MM-YYYY.db) deta hai, MAIN.db ya koi aur file
     KABHI is list mein shamil nahi hoti. Ab har din ki sirf 1 hi file hoti
     hai is liye list chhoti aur saaf rehti hai. Nayi tareekh sab se upar."""

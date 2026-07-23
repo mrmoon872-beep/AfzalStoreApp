@@ -3,13 +3,19 @@ Sync Manager - AfzalStore
 ===========================
 Google Drive ko "asal" (source of truth) database rakhne ke liye 2-way sync.
 
-PERF FIX (is round mein): Pehle throttle ek local JSON "marker file" se hota
-tha - Streamlit Cloud par disk I/O thoda unpredictable ho sakta hai, aur agar
-throttle kabhi fail hota to Drive check HAR rerun par chalta (bohot dheema).
-Ab `st.cache_resource(ttl=...)` use karte hain - yeh Streamlit ka apna,
-server-side, memory-based cache hai: guarantee hai ke andar wala function
-sirf ek dafa TTL window mein chalega, chahe kitni bhi baar/kisi bhi session
-se call ho. Koi disk I/O nahi, koi race condition nahi.
+100% SILENT + NON-BLOCKING (is round ki FINAL FIX):
+- Pehle download-check seedha (blocking) request thread mein chalta tha -
+  agar internet slow ho to poora page load bhi dheema ho jata tha. Ab
+  DOWNLOAD aur UPLOAD dono EK HI background thread mein hote hain - jo
+  function Streamlit se call hota hai (`run_full_sync`) khud sirf thread
+  START kar ke FOREN turant return ho jata hai. App/page kabhi is wajah se
+  nahi rukta, chahe Drive kitni bhi slow kyun na ho.
+- Koi st.toast / st.success / st.info / st.warning KAHIN nahi hai is file
+  mein - background thread se Streamlit UI calls karna waise bhi safe nahi
+  hota, aur user ko yeh sync bilkul dikhna hi nahi chahiye. Poora sync
+  chup-chaap peeche chalta rehta hai.
+- Upload se pehle 5-second debounce hai - taake ek hi save ke turant baad
+  baar baar upload na ho, thoda ruk kar ek hi baar latest file jaye.
 """
 
 import os
@@ -17,87 +23,88 @@ import time
 import threading
 import streamlit as st
 
-SYNC_THROTTLE_SECONDS = 30  # is se zyada baar-baar Drive API call nahi hoti
-_upload_lock = threading.Lock()
-_upload_in_progress = False
+SYNC_THROTTLE_SECONDS = 30      # is se zyada baar-baar Drive check nahi hota
+UPLOAD_DEBOUNCE_SECONDS = 5     # save hone ke turant baad itna ruk kar hi upload hota hai
+
+_sync_lock = threading.Lock()
+_sync_in_progress = False
 _last_known_upload_mtime = 0.0
 
 
-def _background_upload(local_db_path):
-    """Alag thread mein chalta hai - koi bhi st.* call nahi karta (Streamlit
-    ka background-thread context issue se bachne ke liye), sirf file I/O aur
-    Google API calls karta hai."""
-    global _upload_in_progress, _last_known_upload_mtime
-    try:
-        import google_drive_backup as gdrive
-        gdrive.upload_main_db_to_drive(local_db_path)
-        _last_known_upload_mtime = time.time()
-    except Exception:
-        pass  # background thread mein exception UI tak kabhi nahi jani chahiye
-    finally:
-        with _upload_lock:
-            _upload_in_progress = False
-
-
-@st.cache_resource(ttl=SYNC_THROTTLE_SECONDS, show_spinner=False)
-def _throttled_sync_check(_local_db_path, _cache_bust):
-    """PERF FIX: st.cache_resource ki wajah se yeh function ka poora andar
-    ka code sirf HAR 30-SECOND mein EK DAFA chalta hai - chahe app par
-    kitni bhi baar click ho, kitne bhi log ek sath use kar rahe hon. Baaki
-    saari calls (jo TTL window ke andar hon) bina Drive tak pahonchay
-    turant cached result wapas paati hain - is liye ab sync kabhi bhi UI
-    ko dheema nahi karta."""
-    global _upload_in_progress
-
-    status_msg = None
+def _background_full_sync(local_db_path):
+    """POORA sync (download-if-newer + upload-if-changed + daily dated
+    backup) isi EK background thread ke andar hota hai - koi bhi st.* call
+    nahi (na hi koi print/message), sirf file I/O aur Google Drive API
+    calls. Kabhi bhi exception UI tak nahi jati - chup-chaap skip ho jata
+    hai, agli baar phir try hoga."""
+    global _sync_in_progress, _last_known_upload_mtime
     try:
         import google_drive_backup as gdrive
         if not gdrive.is_available() or not gdrive.is_connected():
-            return None
-        # Toggle ("Roz Khud-Ba-Khud Drive Par Backup Karo") hi is poori
-        # OFFLINE<->ONLINE full auto-sync ko control karta hai - OFF hone
-        # par na koi download hoti hai na upload, taake user ka control
-        # bana rahe. ON hote hi (koi aur click ke bagair) yeh apne aap
-        # dono taraf (Drive->PC startup pull, PC->Drive background push)
-        # chalne lagta hai.
-        settings = gdrive.load_settings()
-        if not settings.get("auto_drive_backup_enabled"):
-            return None
-    except Exception:
-        return None
+            return
 
-    try:
-        downloaded, msg = gdrive.download_main_db_if_newer(_local_db_path)
-        if downloaded:
-            status_msg = "🔄 " + msg
+        # 1) STARTUP/ONGOING CHECK: Drive ka MAIN.db agar local se nayi hai
+        #    (kisi doosri device se aaya naya data), to chup-chaap download
+        #    kar ke local file replace kar deta hai. Koi popup/message nahi.
+        try:
+            gdrive.download_main_db_if_newer(local_db_path)
+        except Exception:
+            pass
+
+        # 2) SAVE PAR AUTO-UPLOAD: agar local file is se pehle jitni baar
+        #    upload hui usse nayi hai (matlab kuch naya save hua hai), to
+        #    thoda (5 sec) ruk kar - taake lagataar saves ek hi upload mein
+        #    samet jayen - Drive par upload kar deta hai. MAIN.db hamesha
+        #    'latest timestamp jeetay' rule follow karta hai.
+        try:
+            if os.path.exists(local_db_path):
+                local_mtime = os.path.getmtime(local_db_path)
+                if local_mtime > _last_known_upload_mtime:
+                    time.sleep(UPLOAD_DEBOUNCE_SECONDS)
+                    gdrive.upload_main_db_to_drive(local_db_path)
+                    _last_known_upload_mtime = time.time()
+        except Exception:
+            pass
+
+        # 3) Rozana dated backup (Local+Drive history, 90-din retention) -
+        #    yeh bhi isi background thread mein, chup-chaap.
+        try:
+            gdrive.auto_drive_backup_if_due(local_db_path)
+        except Exception:
+            pass
     except Exception:
         pass
+    finally:
+        with _sync_lock:
+            _sync_in_progress = False
 
-    try:
-        if os.path.exists(_local_db_path):
-            local_mtime = os.path.getmtime(_local_db_path)
-            if local_mtime > _last_known_upload_mtime:
-                with _upload_lock:
-                    already_running = _upload_in_progress
-                    if not already_running:
-                        _upload_in_progress = True
-                if not already_running:
-                    t = threading.Thread(target=_background_upload, args=(_local_db_path,), daemon=True)
-                    t.start()
-    except Exception:
-        pass
 
-    return status_msg
+@st.cache_resource(ttl=SYNC_THROTTLE_SECONDS, show_spinner=False)
+def _throttled_sync_trigger(_local_db_path, _cache_bust):
+    """PERF FIX: `st.cache_resource` ki wajah se yeh sirf HAR 30-SECOND mein
+    EK DAFA background thread START karta hai - khud kabhi Drive tak
+    (blocking) nahi jata, is liye turant return hota hai aur app/page load
+    kabhi is ki wajah se dheema nahi hota."""
+    global _sync_in_progress
+    with _sync_lock:
+        if _sync_in_progress:
+            return
+        _sync_in_progress = True
+    t = threading.Thread(target=_background_full_sync, args=(_local_db_path,), daemon=True)
+    t.start()
 
 
 def run_full_sync(local_db_path="afzal_store.db"):
-    """App.py se har rerun par call karna safe hai - andar `st.cache_resource`
-    khud throttle karta hai, is liye is function ko baar-baar call karna
-    (near-)FREE hai. Returns a status string for optional display, or None."""
+    """App.py se har rerun (aur is liye har save ke baad bhi, kyunke
+    Streamlit save ke baad khud rerun karta hai) par call karna safe hai -
+    khud kabhi block nahi karta, kabhi koi UI message nahi dikhata. Poora
+    OFFLINE<->ONLINE sync isi ek call se chup-chaap chalta rehta hai -
+    kisi toggle/setting se gated nahi hai (data safety ke liye hamesha ON),
+    Backup & Restore page khole bagair bhi."""
     try:
-        return _throttled_sync_check(local_db_path, 0)
+        _throttled_sync_trigger(local_db_path, 0)
     except Exception:
-        return None
+        pass
 
 
 def _background_photo_upload(photo_bytes, filename, subfolder):
