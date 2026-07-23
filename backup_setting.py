@@ -151,38 +151,67 @@ def show_backup_restore():
                 st.divider()
                 settings = gdrive.load_settings()
 
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    auto_on = st.toggle("📅 Roz Khud-Ba-Khud Drive Par Backup Karo", value=settings.get("auto_drive_backup_enabled", False))
-                    if auto_on != settings.get("auto_drive_backup_enabled", False):
-                        settings["auto_drive_backup_enabled"] = auto_on
-                        gdrive.save_settings(settings)
-                        st.rerun()
-                with col_b:
-                    if st.button("☁️ Abhi Turant Drive Par Backup Karo", type="primary"):
-                        with st.spinner("Google Drive par upload ho raha hai..."):
-                            success, message = gdrive.upload_backup_to_drive(DB_FILE)
-                        if success:
-                            st.success(message)
-                        else:
-                            st.error(message)
+                auto_on = st.toggle(
+                    "📅 Roz Khud-Ba-Khud Drive Par Backup Karo (Full Auto-Sync)",
+                    value=settings.get("auto_drive_backup_enabled", False),
+                )
+                if auto_on != settings.get("auto_drive_backup_enabled", False):
+                    settings["auto_drive_backup_enabled"] = auto_on
+                    gdrive.save_settings(settings)
+                    st.rerun()
+
+                if auto_on:
+                    st.success(
+                        "✅ Full Auto-Sync ON hai - ab kabhi kuch click karne ki zaroorat nahi:\n\n"
+                        "- Mobile par jo bhi save karein, background mein khud Drive par chala jayega.\n"
+                        "- PC (offline) khulte hi khud check hota hai - mobile wala nayi data khud aa jata hai.\n"
+                        "- PC par jo save karein, internet aate hi khud Drive par chala jata hai.\n"
+                        "- Roz ek dated backup bhi (Local + Drive) khud ban jati hai."
+                    )
+                    with st.expander("☁️ Zaroorat pare to abhi turant bhi backup kar sakte hain (optional)"):
+                        if st.button("☁️ Abhi Turant Drive Par Backup Karo"):
+                            with st.spinner("Google Drive par upload ho raha hai..."):
+                                success, message = gdrive.upload_backup_to_drive(DB_FILE)
+                            if success:
+                                st.success(message)
+                            else:
+                                st.error(message)
+                else:
+                    st.info("🔕 Full Auto-Sync abhi OFF hai - upar wala toggle ON karein taake offline/online sync khud-ba-khud chalta rahe.")
 
                 last_date = settings.get("last_drive_backup_date")
                 if last_date:
                     st.caption(f"📅 Aakhri automatic Drive backup: {last_date}")
 
                 st.divider()
-                st.markdown("### 📜 Drive Par Maujood Backups")
+                st.markdown("### 🚨 PC Crash/Chori/Format Ho Jaye To (One-Click Full Restore)")
+                st.caption(
+                    "Yeh button seedha Drive ki MAIN database (afzal_store_MAIN.db) - jo hamesha "
+                    "sab se latest aur complete data rakhti hai (sab customers, items, udhaar) - "
+                    "wapas is computer par utaar deta hai. Kisi list mein se date chunne ki zaroorat nahi."
+                )
+                if st.button("🚨 MAIN Backup Se Poora Data Wapas Lao (One-Click Restore)", type="primary"):
+                    with st.spinner("Google Drive se poora data wapas laya ja raha hai..."):
+                        success, message = gdrive.restore_main_db_from_drive(DB_FILE)
+                    if success:
+                        st.cache_resource.clear()
+                        st.success(message + " App restart ho rahi hai...")
+                        st.rerun()
+                    else:
+                        st.error(message)
+
+                st.divider()
+                st.markdown("### 📜 Drive Par Maujood Dated Backups (History - 1 Din = 1 File)")
                 drive_backups = gdrive.list_drive_backups()
 
                 if not drive_backups:
-                    st.info("Abhi Drive par koi backup nahi hai. Upar wala button dabayein.")
+                    st.info("Abhi Drive par koi dated backup nahi hai.")
                 else:
                     backup_labels = {f"{f['name']}": f["id"] for f in drive_backups}
-                    selected_label = st.selectbox("Restore Karne Ke Liye Backup Chuno", list(backup_labels.keys()), key="drive_restore_select")
+                    selected_label = st.selectbox("Kisi Purani Tareekh Se Restore Karne Ke Liye Chuno", list(backup_labels.keys()), key="drive_restore_select")
 
                     st.warning("⚠️ Restore karne se aapki MAUJOODA app ka data is backup se REPLACE ho jayega. Pehle apna current data ka bhi local backup bana lein (upar wale tab se).")
-                    if st.button("♻️ Is Backup Se Restore Karo (Google Drive)", type="secondary"):
+                    if st.button("♻️ Is Tareekh Se Restore Karo (Google Drive)", type="secondary"):
                         selected_id = backup_labels[selected_label]
                         with st.spinner("Google Drive se download ho raha hai..."):
                             success, message = gdrive.download_backup_from_drive(selected_id, DB_FILE)

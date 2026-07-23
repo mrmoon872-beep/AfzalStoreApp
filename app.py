@@ -67,10 +67,13 @@ def get_db():
 # unconditionally on EVERY Streamlit rerun (every click/keystroke anywhere in the app) -
 # ~40 schema probe queries plus a backup-folder scan, every single time, since Streamlit
 # re-executes this whole script top-to-bottom on each interaction. Wrapping one-time setup
-# in @st.cache_resource makes it actually run once (per hour, as a safety net) instead of
-# on every rerun. backup_setting.py calls st.cache_resource.clear() right after a restore
-# so a restored (possibly older-schema) database gets re-migrated immediately.
-@st.cache_resource(ttl=3600, show_spinner=False)
+# in @st.cache_resource makes it run at most once every few minutes (as a safety net)
+# instead of on every rerun. backup_setting.py calls st.cache_resource.clear() right after
+# a restore so a restored (possibly older-schema) database gets re-migrated immediately.
+# ttl=180 (3 min) so that after Nayi Sale / Udhaar Entry ke saves, aaj ki dated
+# Local+Drive backup bhi reasonably jaldi refresh ho jati hai - bina har click par
+# chalne ke (jo dheema kar deta).
+@st.cache_resource(ttl=180, show_spinner=False)
 def run_auto_backup_check():
     auto_daily_backup()
 

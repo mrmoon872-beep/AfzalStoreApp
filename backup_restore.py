@@ -1,7 +1,8 @@
 import streamlit as st
 import os
+import re
 import shutil
-from datetime import datetime
+from datetime import datetime, timedelta
 import google_drive_backup as gdrive
 
 # Database aur Backup folders ke naam
@@ -12,44 +13,40 @@ BACKUP_DIR = 'app_backups'
 if not os.path.exists(BACKUP_DIR):
     os.makedirs(BACKUP_DIR)
 
+BACKUP_RETENTION_DAYS = 90  # 3 mahine - Google Drive wali retention se hamesha match karta hai
+_LOCAL_BACKUP_DATE_RE = re.compile(r"(\d{2}-\d{2}-\d{4})")
+
+
 def auto_daily_backup():
-    """Rozana app khulte hi bina click kiye auto background backup lene ke liye
-    (local disk pe) - aur agar Google Drive backup ON hai to Drive par bhi."""
+    """Rozana app khulte hi (aur din mein jab bhi yeh check chale - jaise Nayi
+    Sale/Udhaar save hone ke baad app rerun hoti hai) bina click kiye
+    computer par 'AAJ KI TAREEKH' wali EK hi backup file rakhta hai - agar
+    file pehle se hai to usi ko overwrite kar deta hai, koi nayi time-wali
+    file kabhi nahi banti. Agar Google Drive backup ON hai to Drive par bhi
+    (alag/optional - kabhi local backup ko crash nahi karta)."""
     if not os.path.exists(DB_FILE):
         return False
 
-    # Aaj ki tarikh (Jaise: 27-06-2026)
     today_str = datetime.now().strftime("%d-%m-%Y")
+    backup_filename = f"afzal_store_backup_{today_str}.db"
+    backup_path = os.path.join(BACKUP_DIR, backup_filename)
 
-    # PERF/BUG FIX: disk full hone ki soorat mein os.listdir/shutil.copy2 crash
-    # kar sakte the - ab har step try/except mein hai, app kabhi is wajah se ruk nahi sakti.
     try:
-        all_files = os.listdir(BACKUP_DIR)
+        free_mb = shutil.disk_usage(".").free / (1024 * 1024)
     except OSError:
-        all_files = []
-
-    auto_exists = any(f"auto_backup_{today_str}" in f for f in all_files)
+        free_mb = None
 
     local_backup_done = False
-    if not auto_exists:
-        timestamp = datetime.now().strftime("%d-%m-%Y_%H-%M")
-        backup_filename = f"auto_backup_{timestamp}.db"
-        backup_path = os.path.join(BACKUP_DIR, backup_filename)
-
+    if free_mb is not None and free_mb < 100:
+        pass  # disk bohot kam hai - chup-chaap skip, agli baar try hoga
+    else:
         try:
-            free_mb = shutil.disk_usage(".").free / (1024 * 1024)
+            shutil.copy2(DB_FILE, backup_path)  # aaj ki file ho to overwrite, warna nayi bane
+            local_backup_done = True
         except OSError:
-            free_mb = None
+            pass
 
-        if free_mb is not None and free_mb < 100:
-            pass  # disk bohot kam hai - chup-chaap skip, agli baar try hoga
-        else:
-            try:
-                shutil.copy2(DB_FILE, backup_path)
-                manage_old_backups()
-                local_backup_done = True
-            except OSError:
-                pass
+    apply_local_retention()
 
     # Google Drive backup - poori tarah alag/optional hai, kabhi bhi local backup ko
     # crash nahi karega chahe internet na ho ya Drive setup na ho.
@@ -61,14 +58,64 @@ def auto_daily_backup():
 
     return local_backup_done
 
-def manage_old_backups():
-    """Dukan ka computer full na ho, isliye 30 din se purane auto backups khud mita deta hai"""
-    all_files = [os.path.join(BACKUP_DIR, f) for f in os.listdir(BACKUP_DIR) if f.endswith('.db')]
-    if len(all_files) > 30:
-        all_files.sort(key=os.path.getmtime)
-        while len(all_files) > 30:
-            os.remove(all_files[0])
-            all_files.pop(0)
+
+def _parse_local_backup_date(filename):
+    m = _LOCAL_BACKUP_DATE_RE.search(filename or "")
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), "%d-%m-%Y").date()
+    except ValueError:
+        return None
+
+
+def apply_local_retention():
+    """Computer ke 'app_backups' folder par wahi 90-din wala rolling
+    retention lagata hai jo Google Drive par lagta hai (isi liye dono
+    jagah hamesha ek jaisi history rehti hai):
+
+    (a) Kisi bhi EK din ki 1 se zyada dated files mil jayen (purani
+        multiple-per-day files se), sirf sab se nayi rakhta hai.
+    (b) 90 din se purani dated backup khud rolling delete ho jati hai -
+        pehle 90 din mein KUCH bhi delete nahi hota.
+
+    Live database (DB_FILE) ko yeh function kabhi nahi chhoo,ta - sirf
+    BACKUP_DIR ke andar ki dated files par asar hota hai."""
+    try:
+        all_files = os.listdir(BACKUP_DIR)
+    except OSError:
+        return
+
+    by_date = {}
+    for fname in all_files:
+        if not fname.endswith(".db"):
+            continue
+        day = _parse_local_backup_date(fname)
+        if day is None:
+            continue
+        by_date.setdefault(day, []).append(fname)
+
+    cutoff = datetime.now().date() - timedelta(days=BACKUP_RETENTION_DAYS)
+
+    for day, group in by_date.items():
+        full_paths = [os.path.join(BACKUP_DIR, f) for f in group]
+        if len(full_paths) > 1:
+            try:
+                full_paths.sort(key=os.path.getmtime, reverse=True)
+            except OSError:
+                pass
+            for extra in full_paths[1:]:
+                try:
+                    os.remove(extra)
+                except OSError:
+                    pass
+            full_paths = full_paths[:1]
+        if day < cutoff:
+            for p in full_paths:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
 
 def show_backup_restore():
     # Page khulte hi auto backup check karega aur chalaye ka

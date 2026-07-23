@@ -54,6 +54,15 @@ def _throttled_sync_check(_local_db_path, _cache_bust):
         import google_drive_backup as gdrive
         if not gdrive.is_available() or not gdrive.is_connected():
             return None
+        # Toggle ("Roz Khud-Ba-Khud Drive Par Backup Karo") hi is poori
+        # OFFLINE<->ONLINE full auto-sync ko control karta hai - OFF hone
+        # par na koi download hoti hai na upload, taake user ka control
+        # bana rahe. ON hote hi (koi aur click ke bagair) yeh apne aap
+        # dono taraf (Drive->PC startup pull, PC->Drive background push)
+        # chalne lagta hai.
+        settings = gdrive.load_settings()
+        if not settings.get("auto_drive_backup_enabled"):
+            return None
     except Exception:
         return None
 

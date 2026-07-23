@@ -17,16 +17,54 @@ karega - sirf ek friendly False/None return karega jise calling code handle kart
 """
 
 import os
+import re
 import json
 import threading
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timedelta
 
 CLIENT_SECRET_FILE = "client_secret.json"
 TOKEN_FILE = "drive_token.json"
 SETTINGS_FILE = "drive_backup_settings.json"
 DRIVE_FOLDER_NAME = "AfzalStore_Backups"
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]  # sirf app ki apni files - poori Drive nahi
+MAIN_DB_DRIVE_NAME = "afzal_store_MAIN.db"
+
+# ---------------------------------------------------------------------
+# DATED BACKUP RETENTION (History list ke liye - 1 din = 1 file)
+# ---------------------------------------------------------------------
+BACKUP_RETENTION_DAYS = 90  # 3 mahine - is se purani dated backup rolling delete hoti hai
+_BACKUP_DATE_RE = re.compile(r"(\d{2}-\d{2}-\d{4})")
+
+
+def _backup_filename_for_today():
+    """Aaj ki tareekh wala dated-backup naam - is naam ki file din mein
+    kitni bhi baar banayi jaye, hamesha WAHI EK file overwrite hoti hai."""
+    return f"afzal_store_backup_{datetime.now().strftime('%d-%m-%Y')}.db"
+
+
+def _parse_backup_date(filename):
+    """Filename mein se DD-MM-YYYY nikal kar date() deta hai. Na mile ya
+    invalid ho to None (aisi files retention/list dono se chup-chaap
+    ignore ho jati hain, kabhi delete nahi hoti)."""
+    m = _BACKUP_DATE_RE.search(filename or "")
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), "%d-%m-%Y").date()
+    except ValueError:
+        return None
+
+
+def _is_dated_backup_name(name):
+    """MAIN.db (master file) is check se KABHI match nahi hoti - sirf
+    'afzal_store_backup_...db' jaisi dated history files match hoti hain.
+    Isi function ki wajah se retention/cleanup logic MAIN.db ko kabhi
+    haath tak nahi laga sakta."""
+    if not name or name == MAIN_DB_DRIVE_NAME:
+        return False
+    lname = name.lower()
+    return "backup" in lname and lname.endswith(".db")
 
 
 # ---------------------------------------------------------------------
@@ -426,8 +464,13 @@ def _get_or_create_backup_folder(service):
 
 
 def upload_backup_to_drive(local_db_path="afzal_store.db"):
-    """Live database file seedha Google Drive par upload karta hai (koi extra local
-    copy banaye bagair, taake disk space kam na ho). Returns (success: bool, message: str)."""
+    """Live database file ko 'AAJ KI TAREEKH' wali dated backup ke taur par
+    Google Drive par upload karta hai. Din mein yeh function kitni bhi baar
+    chale (auto-daily-check, dobara rerun, ya manual button), NAYI file
+    KABHI nahi banti - agar aaj ki tareekh wali file Drive par pehle se hai
+    to usi ko UPDATE (overwrite) kar diya jata hai. Isi wajah se Drive ki
+    history list mein hamesha zyada se zyada EK file per din hi rehti hai.
+    Returns (success: bool, message: str)."""
     if not is_available():
         return False, "Google Drive setup mukammal nahi hai."
     if not os.path.exists(local_db_path):
@@ -442,14 +485,27 @@ def upload_backup_to_drive(local_db_path="afzal_store.db"):
         if not folder_id:
             return False, "❌ Drive par backup folder nahi ban saka."
 
-        timestamp = datetime.now().strftime("%d-%m-%Y_%H-%M")
-        drive_filename = f"afzal_store_backup_{timestamp}.db"
+        drive_filename = _backup_filename_for_today()
 
-        file_metadata = {"name": drive_filename, "parents": [folder_id]}
+        # Aaj ki tareekh wali file Drive par pehle se maujood hai kya?
+        existing_id = None
+        try:
+            results = service.files().list(
+                q=f"name='{drive_filename}' and '{folder_id}' in parents and trashed=false",
+                spaces="drive", fields="files(id)").execute()
+            found = results.get("files", [])
+            existing_id = found[0]["id"] if found else None
+        except Exception:
+            existing_id = None
+
         media = MediaFileUpload(local_db_path, mimetype="application/octet-stream", resumable=True)
-        service.files().create(body=file_metadata, media_body=media, fields="id").execute()
+        if existing_id:
+            service.files().update(fileId=existing_id, media_body=media).execute()
+        else:
+            service.files().create(body={"name": drive_filename, "parents": [folder_id]},
+                                    media_body=media, fields="id").execute()
 
-        _cleanup_old_drive_backups(service, folder_id, keep_latest=20)
+        _apply_drive_retention(service, folder_id)
         return True, f"✅ Google Drive par backup ho gaya: {drive_filename}"
     except Exception as e:
         msg = str(e).lower()
@@ -460,22 +516,53 @@ def upload_backup_to_drive(local_db_path="afzal_store.db"):
         return False, f"❌ Drive upload nahi ho saka: {e}"
 
 
-def _cleanup_old_drive_backups(service, folder_id, keep_latest=30):
-    """Computer ki tarah Drive par bhi space bachane ke liye, sirf latest N backups
-    rakhta hai, baaki purani khud mita deta hai."""
+def _apply_drive_retention(service, folder_id):
+    """Drive Backups folder par 2 kaam karta hai (MAIN.db ko kabhi chhoo
+    nahi ta - sirf dated 'afzal_store_backup_*.db' files par asar hota hai):
+
+    (a) Agar kisi bhi EK din ki 1 se zyada dated files mil jayen (purani
+        history se, jab pehle time-wale naam bante the), sirf sab se NAYI
+        rakhta hai, baaki usi din ki extra files mita deta hai - isi se
+        list turant 'ek din = ek file' ban jati hai.
+    (b) 90 din (3 mahine) se purani koi bhi dated backup khud rolling
+        delete ho jati hai - pehle 90 din mein KUCH bhi delete nahi hota,
+        us ke baad rozana bilkul 1 purani file (90 din wali) hatt jati hai."""
     try:
         results = service.files().list(
             q=f"'{folder_id}' in parents and trashed=false",
-            spaces="drive", fields="files(id, name, createdTime)",
-            orderBy="createdTime desc").execute()
+            spaces="drive", fields="files(id, name, createdTime)").execute()
         files = results.get("files", [])
-        for old_file in files[keep_latest:]:
-            try:
-                service.files().delete(fileId=old_file["id"]).execute()
-            except Exception:
-                pass
     except Exception:
-        pass
+        return
+
+    by_date = {}
+    for f in files:
+        if not _is_dated_backup_name(f.get("name", "")):
+            continue  # MAIN.db ya koi aur file - kabhi mat chuo
+        day = _parse_backup_date(f["name"])
+        if day is None:
+            continue
+        by_date.setdefault(day, []).append(f)
+
+    cutoff = datetime.now().date() - timedelta(days=BACKUP_RETENTION_DAYS)
+
+    for day, group in by_date.items():
+        # (a) Isi din ki duplicate files mein se sirf nayi rakho
+        if len(group) > 1:
+            group.sort(key=lambda f: f.get("createdTime", ""), reverse=True)
+            for extra in group[1:]:
+                try:
+                    service.files().delete(fileId=extra["id"]).execute()
+                except Exception:
+                    pass
+            group = group[:1]
+        # (b) 90 din se purani - rolling delete
+        if day < cutoff:
+            for f in group:
+                try:
+                    service.files().delete(fileId=f["id"]).execute()
+                except Exception:
+                    pass
 
 
 def _get_or_create_folder_path(service, folder_names):
@@ -588,9 +675,6 @@ def sync_pending_local_photos(local_folder="bill_images"):
         return results.get("files", [])
     except Exception:
         return []
-
-
-MAIN_DB_DRIVE_NAME = "afzal_store_MAIN.db"
 
 
 def _get_main_db_file_id(service, folder_id):
@@ -757,24 +841,73 @@ def auto_drive_backup_if_due(local_db_path="afzal_store.db"):
     except Exception:
         return False
 def list_drive_backups():
+    """'Drive Par Maujood Backups' list ke liye - sirf DATED history files
+    (afzal_store_backup_DD-MM-YYYY.db) deta hai, MAIN.db ya koi aur file
+    KABHI is list mein shamil nahi hoti. Ab har din ki sirf 1 hi file hoti
+    hai is liye list chhoti aur saaf rehti hai. Nayi tareekh sab se upar."""
     try:
         service = _get_drive_service()
         if not service:
             return []
+        folder_id = _get_or_create_backup_folder(service)
+        if not folder_id:
+            return []
         results = service.files().list(
-            q="trashed=false", 
-            pageSize=20, 
-            fields="files(id, name, size, modifiedTime)"
+            q=f"'{folder_id}' in parents and trashed=false",
+            fields="files(id, name, size, modifiedTime, createdTime)"
         ).execute()
         files = results.get('files', [])
-        backups = []
-        for f in files:
-            if 'afzal' in f['name'].lower() or 'backup' in f['name'].lower() or '.db' in f['name'].lower():
-                backups.append(f)
-        return backups
+        dated = [f for f in files if _is_dated_backup_name(f.get("name", ""))]
+        dated.sort(key=lambda f: _parse_backup_date(f["name"]) or datetime.min.date(), reverse=True)
+        return dated
     except Exception as e:
         print(f"List backup error: {e}")
         return []
+
+
+def restore_main_db_from_drive(dest_path="afzal_store.db"):
+    """ONE-CLICK FULL RESTORE: Drive par maujood afzal_store_MAIN.db - jo
+    HAMESHA sab se latest/complete data (sab customers, items, udhaar,
+    sab kuch) rakhti hai - seedha `dest_path` par utaar deta hai. Windows
+    reinstall / PC crash / PC chori jaisi situation mein, kisi list mein se
+    date chunne ki zaroorat nahi - bas ek click aur poora data wapas.
+    Returns (success: bool, message: str)."""
+    if not is_available():
+        return False, "Google Drive setup mukammal nahi hai."
+    service = _get_drive_service()
+    if service is None:
+        return False, "❌ Google Drive se connection nahi hai."
+
+    try:
+        folder_id = _get_or_create_backup_folder(service)
+        if not folder_id:
+            return False, "❌ Drive par backup folder nahi mila."
+        file_info = _get_main_db_file_id(service, folder_id)
+        if not file_info:
+            return False, "❌ Drive par abhi tak MAIN database maujood nahi hai."
+
+        # Purani local file ki safety copy pehle rakh lo, taake restore
+        # galti se bhi ho jaye to purana data zaya na ho
+        if os.path.exists(dest_path):
+            try:
+                import shutil
+                safety_name = dest_path + f".before_full_restore_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}.bak"
+                shutil.copy2(dest_path, safety_name)
+            except OSError:
+                pass
+
+        temp_path = dest_path + ".main_restore_tmp"
+        request = service.files().get_media(fileId=file_info["id"])
+        fh = io.FileIO(temp_path, "wb")
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        fh.close()
+        os.replace(temp_path, dest_path)
+        return True, "✅ Poora data Google Drive (MAIN backup) se successfully wapas aa gaya!"
+    except Exception as e:
+        return False, f"❌ Restore nahi ho saka: {e}"
 
 # ---------------------------------------------------------------------
 # EXACT-NAMED WRAPPERS (auto_sync_from_drive / upload_backup)
