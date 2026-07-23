@@ -214,11 +214,25 @@ def show_backup_restore():
         if not drive_backups:
             st.info("Abhi Drive par koi dated backup nahi hai.")
         else:
-            backup_labels = {f"{f['name']}": f["id"] for f in drive_backups}
+            # RECOVERY MODE: har backup ke saath uska size bhi dikhaya jata hai,
+            # taake khali/stub backups (jo empty-db bug se kabhi ban gayi hon)
+            # asani se pehchani ja sakein aur ghalti se select na ho jayein.
+            def _fmt_size(f):
+                try:
+                    size_bytes = int(f.get("size") or 0)
+                except (TypeError, ValueError):
+                    size_bytes = 0
+                if size_bytes >= 1024 * 1024:
+                    return f"{size_bytes / (1024 * 1024):.1f} MB"
+                return f"{size_bytes / 1024:.0f} KB"
+
+            backup_labels = {f"{f['name']}  ({_fmt_size(f)})": f["id"] for f in drive_backups}
             selected_label = st.selectbox(
                 "Kisi Purani Tareekh Se Restore Karne Ke Liye Chuno",
                 list(backup_labels.keys()), key="drive_restore_select",
             )
+            if "( 0 KB)" in selected_label or "(0 KB)" in selected_label:
+                st.warning("⚠️ Yeh backup khali/bohot choti lag rahi hai - is mein shayad koi data nahi hoga.")
             if not st.session_state.get("_confirm_dated_restore"):
                 if st.button("♻️ Is Tareekh Se Restore Karo", key="_dated_restore_btn"):
                     st.session_state["_confirm_dated_restore"] = True

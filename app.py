@@ -288,6 +288,20 @@ def ensure_database_schema():
 run_auto_backup_check()
 ensure_database_schema()
 
+# BUG FIX (no such column: kharid_price): upar wala ensure_database_schema()
+# 'items' table sirf (id, name) ke sath banata hai agar table pehle se na ho
+# (jaise fresh/ephemeral restart ke baad). Poori items schema (kharid_price,
+# sale_price, category, waghera) ab tak sirf items_add.py ke ensure_items_schema()
+# mein thi, jo tab tak nahi chalta jab tak user khud "Items Add" tab na khole -
+# is beech agar koi aur page (Roll Nama, Dashboard, waghera) items.kharid_price
+# query kare to crash ho jata tha. Ab yeh startup par hi (Items Add khole
+# bagair bhi) guaranteed chal jata hai - khud cached hai (1hr) is liye sasta hai.
+try:
+    from items_add import ensure_items_schema as _ensure_items_schema
+    _ensure_items_schema()
+except Exception:
+    pass
+
 # PERF FIX: this used to run unconditionally on every rerun too - a full khata table scan
 # plus a per-row write with 3 correlated subqueries each. Cached the same way so it
 # recomputes at most once an hour per server process instead of on every click.

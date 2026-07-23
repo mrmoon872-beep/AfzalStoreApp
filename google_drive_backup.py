@@ -36,6 +36,68 @@ MAIN_DB_DRIVE_NAME = "afzal_store_MAIN.db"
 BACKUP_RETENTION_DAYS = 90  # 3 mahine - is se purani dated backup rolling delete hoti hai
 _BACKUP_DATE_RE = re.compile(r"(\d{2}-\d{2}-\d{4})")
 
+# ---------------------------------------------------------------------
+# EMPTY-DB PROTECTION (data-loss bug fix)
+# ---------------------------------------------------------------------
+# BUG FIX: pehle sirf modifiedTime/mtime compare karte the ke "kaun nayi hai"
+# - lekin agar app ek fresh/ephemeral container mein restart hoti hai (jahan
+# local disk persist nahi karti), to sqlite3.connect() + CREATE TABLE se
+# ek bilkul KHALI local afzal_store.db abhi-abhi ban jati hai - jis ka mtime
+# "abhi" (sab se NAYA) ho jata hai, chahe usme data ka naam-o-nishaan na ho.
+# Sirf mtime dekhne se yeh khali file "sab se nayi" lagti thi, is liye:
+#   1) asal (bhari-bharkam) Drive data download hi nahi hota tha, aur
+#   2) 5-second baad yehi khali file Drive par UPLOAD ho kar asal MAIN
+#      backup ko bhi khali file se REPLACE kar deti thi.
+# Ab timestamp ke sath-sath file "size" bhi dekha jata hai: agar koi file
+# (local ya Drive) khatarnak tarah se choti hai jabke doosri taraf wali
+# file khaasi badi hai, to us "choti" file par kabhi bharosa nahi kiya
+# jata - chahe uska mtime/timestamp kitna hi "naya" kyun na ho.
+EMPTY_DB_SIZE_THRESHOLD = 12 * 1024       # is se choti file "khali/stub" mani jati hai
+                                           # (khali CREATE TABLE schema ~8KB hoti hai)
+POPULATED_DB_SIZE_THRESHOLD = 20 * 1024   # is se badi file "waqai data wali" ho sakti hai
+                                           # (chhota naya shop bhi jaldi is se aage nikal jata hai)
+                                           # - asal faisla row-count se hota hai, yeh sirf
+                                           # Drive side ke liye ek sasta pre-filter hai (Drive
+                                           # file download kiye baghair uske andar rows nahi
+                                           # gin sakte, is liye sirf size dekha jata hai).
+
+
+def _local_db_size(local_db_path):
+    try:
+        return os.path.getsize(local_db_path) if os.path.exists(local_db_path) else 0
+    except OSError:
+        return 0
+
+
+def _looks_empty(size_bytes):
+    return size_bytes < EMPTY_DB_SIZE_THRESHOLD
+
+
+def _looks_populated(size_bytes):
+    return size_bytes > POPULATED_DB_SIZE_THRESHOLD
+
+
+def _local_db_row_count(local_db_path):
+    """Local DB mein kitni 'asal' rows hain (items+sales+khata jama), sirf
+    size ke ilawa ek extra content-based check ke liye. Kabhi crash nahi
+    karta - table na ho ya file locked ho to bas 0 wapas karta hai."""
+    if not os.path.exists(local_db_path):
+        return 0
+    total = 0
+    try:
+        import sqlite3
+        conn = sqlite3.connect(local_db_path, timeout=3)
+        for table in ("items", "sales", "khata", "customers"):
+            try:
+                cur = conn.execute(f"SELECT COUNT(*) FROM {table}")
+                total += cur.fetchone()[0] or 0
+            except Exception:
+                pass
+        conn.close()
+    except Exception:
+        pass
+    return total
+
 
 def _backup_filename_for_today():
     """Aaj ki tareekh wala dated-backup naam - is naam ki file din mein
@@ -681,7 +743,7 @@ def _get_main_db_file_id(service, folder_id):
     try:
         results = service.files().list(
             q=f"name='{MAIN_DB_DRIVE_NAME}' and '{folder_id}' in parents and trashed=false",
-            spaces="drive", fields="files(id, modifiedTime)").execute()
+            spaces="drive", fields="files(id, modifiedTime, size)").execute()
         files = results.get("files", [])
         return files[0] if files else None
     except Exception:
@@ -729,6 +791,22 @@ def upload_main_db_to_drive(local_db_path="afzal_store.db"):
             return False, "❌ Drive par folder nahi ban saka."
 
         existing = _get_main_db_file_id(service, folder_id)
+
+        # EMPTY-DB PROTECTION: agar local file khatarnak tarah se choti/khali hai
+        # (jaise fresh container restart ke baad abhi-abhi CREATE TABLE se bani ho)
+        # jabke Drive par pehle se ek 'waqai data wali' MAIN backup maujood hai, to
+        # kabhi upload nahi karte - warna asal data isi khali file se overwrite ho
+        # jata. Row-count bhi dekha jata hai (size ke sath) taake false-positive na ho.
+        if existing:
+            local_size = _local_db_size(local_db_path)
+            drive_size = int(existing.get("size") or 0)
+            if _looks_empty(local_size) and _looks_populated(drive_size) and _local_db_row_count(local_db_path) == 0:
+                return False, (
+                    "⚠️ Local database khali/naya lag raha hai jabke Drive par pehle se "
+                    "data-wali backup maujood hai - safety ke liye upload skip kar diya "
+                    "gaya taake asal data zaya na ho."
+                )
+
         media = MediaFileUpload(local_db_path, mimetype="application/octet-stream", resumable=True)
 
         if existing:
@@ -769,8 +847,27 @@ def download_main_db_if_newer(local_db_path="afzal_store.db"):
         drive_time = _dt.strptime(file_info["modifiedTime"], "%Y-%m-%dT%H:%M:%S.%fZ")
         local_time = _dt.utcfromtimestamp(os.path.getmtime(local_db_path)) if os.path.exists(local_db_path) else _dt.min
 
-        if drive_time <= local_time:
+        local_size = _local_db_size(local_db_path)
+        drive_size = int(file_info.get("size") or 0)
+
+        # EMPTY-DB PROTECTION (BUG FIX): local file ka mtime "nayi" lag sakta hai
+        # sirf is liye ke woh abhi-abhi (fresh restart par) khali table ke sath
+        # bani hai - is tarah ki khali/stub file ko kabhi "up-to-date" maan kar
+        # asal Drive data download karne se mana nahi karte. Row-count se bhi
+        # confirm karte hain taake sirf size ka dhoka na ho.
+        local_is_stub = (
+            _looks_empty(local_size) and _looks_populated(drive_size)
+            and _local_db_row_count(local_db_path) == 0
+        )
+
+        if drive_time <= local_time and not local_is_stub:
             return False, "Local database already up-to-date hai."
+
+        # ULTA protection: agar Drive wali file khud choti/khali hai jabke local
+        # mein waqai data maujood hai, to us khali Drive file se local ko kabhi
+        # overwrite nahi karte, chahe timestamp kuch bhi kahe.
+        if _looks_empty(drive_size) and _looks_populated(local_size) and _local_db_row_count(local_db_path) > 0:
+            return False, "Drive backup khali lag rahi hai - safety ke liye local data overwrite nahi kiya gaya."
 
         temp_path = local_db_path + ".drive_download_tmp"
         request = service.files().get_media(fileId=file_info["id"])
