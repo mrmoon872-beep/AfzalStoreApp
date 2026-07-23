@@ -19,6 +19,7 @@ karega - sirf ek friendly False/None return karega jise calling code handle kart
 import os
 import json
 import threading
+import urllib.parse
 from datetime import datetime
 
 CLIENT_SECRET_FILE = "client_secret.json"
@@ -146,15 +147,54 @@ except ImportError:
     GOOGLE_LIBS_AVAILABLE = False
 
 
+def _get_cloud_token_raw():
+    """st.secrets mein 'gdrive_token' dhoondta hai - top-level par (jaisa
+    documentation mein bataya gaya) YA agar kisi ne galti se [gdrive] section
+    ke andar daal diya ho, wahan bhi check karta hai. Kuch na mile to None."""
+    try:
+        import streamlit as st
+        if not hasattr(st, "secrets"):
+            return None
+        if "gdrive_token" in st.secrets:
+            return st.secrets["gdrive_token"]
+        if "gdrive" in st.secrets:
+            section = st.secrets["gdrive"]
+            try:
+                if "gdrive_token" in section:
+                    return section["gdrive_token"]
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return None
+
+
 def _has_cloud_token():
     """Streamlit Cloud par client_secret.json file nahi hoti - agar Secrets mein
     pehle se ek valid token maujood hai, to Drive available maan lo (Connect
     flow Cloud par chalti hi nahi, sirf local PC par ek-baara chalti hai)."""
+    return _get_cloud_token_raw() is not None
+
+
+def cloud_token_diagnostics():
+    """Secret ki VALUE kabhi bhi wapas nahi karta - sirf yeh batata hai ke
+    kis stage tak cheezein sahi hain, taake 'connect nahi ho raha' jaisi
+    khamoshh (silent) nakami ki bajaye asal wajah pata chal sake."""
+    info = {"secret_mila": False, "json_theek_hai": False, "credentials_valid": False, "error": None}
+    raw = _get_cloud_token_raw()
+    if raw is None:
+        return info
+    info["secret_mila"] = True
     try:
-        import streamlit as st
-        return hasattr(st, "secrets") and "gdrive_token" in st.secrets
-    except Exception:
-        return False
+        data = json.loads(raw) if isinstance(raw, str) else dict(raw)
+        info["json_theek_hai"] = True
+        creds = Credentials.from_authorized_user_info(data, SCOPES)
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        info["credentials_valid"] = bool(creds and creds.valid)
+    except Exception as e:
+        info["error"] = str(e)[:200]
+    return info
 
 
 def is_available():
@@ -199,102 +239,78 @@ def is_connected():
         return False
 
 
-_connect_state = {"flow": None, "result": None, "port": 8765}
+_connect_state = {"flow": None}
 
 
 def start_drive_connect():
-    """PEHLE connect_to_drive() terminal mein ek link print karta tha - agar
-    user terminal window dekh hi na paye (ya woh chhupi/band ho) to woh
-    hamesha atka rehta tha. Ab yeh function turant ek clickable authorization
-    URL wapas deta hai jo seedha Streamlit UI mein dikhayi ja sakti hai - kisi
-    terminal ki zaroorat nahi. Background mein ek chhota local server (fixed
-    port par) Google ke jawab (redirect) ka intezar karta hai.
-    Returns (auth_url, error_message)."""
+    """Ek authorization URL banata hai jo seedha Streamlit UI mein dikhayi ja
+    sakti hai. PEHLE yeh ek local server (localhost:8765) chalata tha jo
+    Google ke redirect ka intezar karta - lekin Streamlit CLOUD par yeh
+    KABHI kaam nahi kar sakta: jab user apne browser mein 'Allow' dabata
+    hai, Google us USER KE APNE browser ko localhost par bhejta hai - aur
+    'localhost' hamesha user ki apni machine hoti hai, Cloud server nahi.
+    Is liye us mode mein "localhost refused to connect" hamesha aata,
+    chahe code kuch bhi ho.
+    NAYA TAREEQA (local aur Cloud dono par barabar kaam karta hai): user ko
+    sirf link di jati hai; Allow karne ke baad jo (chahe error) page khule
+    us ke URL bar se poora link copy kar ke wapas app mein paste karna hota
+    hai - hum us se sirf 'code' nikal lete hain, kisi listening server ki
+    zaroorat nahi. Returns (auth_url, error_message)."""
     if not GOOGLE_LIBS_AVAILABLE:
         return None, "❌ Google Drive libraries install nahi hain. Terminal mein yeh chalayein:\npip install google-auth-oauthlib google-api-python-client google-auth-httplib2"
     secret_path = get_client_secret_path()
     if not os.path.exists(secret_path):
         return None, f"❌ '{CLIENT_SECRET_FILE}' file root ya _internal folder, kisi mein bhi nahi mili."
 
-    import http.server
-    import urllib.parse
-
     try:
-        port = _connect_state["port"]
         flow = InstalledAppFlow.from_client_secrets_file(secret_path, SCOPES)
-        # Fixed port istemal kar rahe hain (random port=0 ki jagah) taake auth
-        # URL abhi, is waqt bana sakein - Google ke "Desktop app" type client
-        # kisi bhi localhost port ko automatically allow karte hain, is liye
-        # Cloud Console mein ismein kuch add karne ki zaroorat nahi.
-        flow.redirect_uri = f"http://localhost:{port}/"
+        # 'http://localhost/' istemal kar rahe hain sirf taake Google ka
+        # "Desktop app" client type ise valid maane (yeh kisi bhi localhost
+        # redirect ko automatically allow karta hai) - hum is par kabhi
+        # actually listen nahi karte, is liye yeh Cloud par bhi chalega.
+        flow.redirect_uri = "http://localhost/"
         auth_url, _ = flow.authorization_url(access_type="offline", prompt="consent")
-
-        result_holder = {"code": None, "done": False, "error": None}
-
-        class _Handler(http.server.BaseHTTPRequestHandler):
-            def do_GET(self):
-                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-                if "code" in qs:
-                    result_holder["code"] = qs["code"][0]
-                elif "error" in qs:
-                    result_holder["error"] = qs["error"][0]
-                self.send_response(200)
-                self.send_header("Content-type", "text/html; charset=utf-8")
-                self.end_headers()
-                self.wfile.write(
-                    "<html><body style='font-family:sans-serif;padding:40px'>"
-                    "<h2>✅ Ho gaya! Ab is tab ko band kar dein aur Afzal Store app par wapas jayein.</h2>"
-                    "</body></html>".encode("utf-8")
-                )
-                result_holder["done"] = True
-
-            def log_message(self, *args):
-                pass  # console spam mat karo
-
-        httpd = http.server.HTTPServer(("localhost", port), _Handler)
-        httpd.timeout = 300  # 5 minute tak wait karega, phir chup-chaap ruk jayega
-
-        def _serve():
-            try:
-                httpd.handle_request()
-            except Exception as e:
-                result_holder["error"] = str(e)
-
-        t = threading.Thread(target=_serve, daemon=True)
-        t.start()
-
         _connect_state["flow"] = flow
-        _connect_state["result"] = result_holder
         return auth_url, None
     except Exception as e:
         return None, f"❌ {e}"
 
 
-def poll_drive_connect():
-    """Streamlit ke 'Check Karo' button se call hota hai - agar user ne link
-    khol kar Allow kar diya hai to token save kar deta hai. Returns
-    (success: bool, message_or_None). message None ho aur success False ho
-    to iska matlab hai 'abhi tak wait ho raha hai, dobara try karein'."""
+def complete_drive_connect(pasted_text):
+    """User jo bhi paste kare - poora redirect URL (jisme 'localhost refused
+    to connect' dikha ho) YA sirf 'code' - usme se authorization code nikal
+    kar token banata hai aur save kar deta hai. Kaam karta hai chahe
+    'connection refused' page dikha ho, kyunke code hamesha URL ke andar
+    hota hai, page load hone se koi farq nahi padta.
+    Returns (success: bool, message: str)."""
     flow = _connect_state.get("flow")
-    result_holder = _connect_state.get("result")
-    if not flow or not result_holder:
+    if not flow:
         return False, "Pehle 'Google Drive Connect Karo' button dabayein."
-    if not result_holder.get("done"):
-        return False, None
-    if result_holder.get("error"):
-        return False, f"❌ Google ne allow nahi kiya: {result_holder['error']}"
-    if not result_holder.get("code"):
-        return False, "❌ Koi authorization code nahi mila. Dobara koshish karein."
+
+    text = (pasted_text or "").strip()
+    if not text:
+        return False, "Pehle upar wale box mein URL ya code paste karein."
+
+    code = None
+    if "code=" in text:
+        try:
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(text).query)
+            if "code" in qs:
+                code = qs["code"][0]
+        except Exception:
+            code = None
+    if not code:
+        code = text  # shayad sirf bare code hi paste kiya ho
+
     try:
-        flow.fetch_token(code=result_holder["code"])
+        flow.fetch_token(code=code)
         creds = flow.credentials
         with open(TOKEN_FILE, "w") as token:
             token.write(creds.to_json())
         _connect_state["flow"] = None
-        _connect_state["result"] = None
         return True, "✅ Google Drive kamyabi se connect ho gayi!"
     except Exception as e:
-        return False, f"❌ Token save karne mein masla: {e}"
+        return False, f"❌ Code sahi nahi tha ya expire ho gaya: {e}\n\nDobara 'Connect Karo' se shuru karein."
 
 
 def connect_to_drive():
@@ -357,9 +373,8 @@ def _get_credentials():
         return None
 
     try:
-        import streamlit as st
-        if hasattr(st, "secrets") and "gdrive_token" in st.secrets:
-            token_json = st.secrets["gdrive_token"]
+        token_json = _get_cloud_token_raw()
+        if token_json is not None:
             if isinstance(token_json, str):
                 creds = Credentials.from_authorized_user_info(json.loads(token_json), SCOPES)
             else:

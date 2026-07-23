@@ -89,16 +89,21 @@ def show_backup_restore():
                 st.success("✅ Google Drive Connected Hai")
             elif is_cloud_token:
                 # Cloud par 'gdrive_token' Secret maujood hai lekin invalid/expire
-                # ho chuka hai. Yahan HARGIZ "Connect Karo" button nahi dikhana -
-                # woh connect_to_drive() ko call karta hai jo local browser kholne
-                # ki koshish karta hai, aur Cloud (headless server) par isi wajah
-                # se "could not locate runnable browser" wala error aata hai.
+                # ho chuka hai. Yahan HARGIZ localhost-based "Connect Karo" flow
+                # nahi dikhana - woh sirf local PC par kaam karta hai.
                 st.error(
                     "❌ Streamlit Secrets mein 'gdrive_token' maujood hai lekin ab valid/refreshable nahi hai.\n\n"
                     "Apne PC (local) par ek baar dobara 'Connect Google Drive' karein, phir jo nayi "
                     "drive_token.json banegi uska poora content Streamlit Cloud ke Secrets mein "
                     "'gdrive_token' ke naam se update kar dein."
                 )
+                with st.expander("🔍 Diagnostic Info (dikhata hai masla kahan hai, secret khud kabhi nahi dikhata)"):
+                    diag = gdrive.cloud_token_diagnostics()
+                    st.write(f"Secret mila: {'✅ Haan' if diag['secret_mila'] else '❌ Nahi'}")
+                    st.write(f"JSON theek se parse hui: {'✅ Haan' if diag['json_theek_hai'] else '❌ Nahi'}")
+                    st.write(f"Credentials valid hain: {'✅ Haan' if diag['credentials_valid'] else '❌ Nahi'}")
+                    if diag["error"]:
+                        st.code(diag["error"])
             else:
                 st.info("🔌 Google Drive abhi connect nahi hai.")
 
@@ -113,24 +118,30 @@ def show_backup_restore():
                             st.rerun()
                 else:
                     st.link_button(
-                        "👉 Yahan Click Kar Ke Google Account Allow Karein",
+                        "👉 Pehle Yahan Click Kar Ke Allow Karein",
                         st.session_state.get("_gdrive_auth_url", ""),
                         type="primary",
                     )
-                    st.caption("Upar wala link kisi bhi browser mein khulega - apna Google account select/allow karein, phir neeche wala button dabayein.")
-                    col_check, col_cancel = st.columns(2)
-                    with col_check:
-                        if st.button("✅ Maine Allow Kar Diya - Ab Check Karo"):
-                            success, message = gdrive.poll_drive_connect()
+                    st.caption(
+                        "Allow karne ke baad Google aapko ek 'localhost' wale page par le jayega jo "
+                        "shayad 'this site can't be reached' dikhaye - **yeh bilkul normal hai, ignore "
+                        "karein.** Us page ke URL/address bar mein poora link maujood hai - wahi copy "
+                        "kar ke neeche paste karein."
+                    )
+                    pasted = st.text_input(
+                        "Yahan wo poora URL (ya sirf uska 'code=' wala hissa) paste karein:",
+                        key="_gdrive_pasted_code",
+                    )
+                    col_confirm, col_cancel = st.columns(2)
+                    with col_confirm:
+                        if st.button("✅ Connect Complete Karo", type="primary"):
+                            success, message = gdrive.complete_drive_connect(pasted)
                             if success:
                                 st.session_state["_gdrive_connecting"] = False
                                 st.success(message)
                                 st.rerun()
-                            elif message:
-                                st.error(message)
-                                st.session_state["_gdrive_connecting"] = False
                             else:
-                                st.warning("Abhi tak allow hota nazar nahi aa raha - pehle upar wala link click kar ke allow karein, phir dobara yeh button dabayein.")
+                                st.error(message)
                     with col_cancel:
                         if st.button("❌ Cancel"):
                             st.session_state["_gdrive_connecting"] = False
