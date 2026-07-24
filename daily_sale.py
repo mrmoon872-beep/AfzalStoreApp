@@ -111,52 +111,28 @@ def show_daily_sale(get_db=None):
         st.title("📊 Afzal Store - Main Dashboard")
     
     with col_clock:
-        # ULTRA-LIGHT CLOCK (fix for speed regression after live clock added):
-        # Purana components.html() version har rerun par ek naya <iframe>
-        # banata tha (heavy overhead) - isi wajah se Dashboard load 0.1s se
-        # 1.1s ho gaya tha aur page navigation par bhi ~1s lag aata tha.
-        # Ab st.markdown(unsafe_allow_html=True) use ho raha hai - yeh sirf
-        # inline <div>/<script> string ko seedha page ke DOM mein daalta hai,
-        # koi iframe nahi banta. Python sirf ek dafa (pehle paint ke liye)
-        # Karachi time compute karta hai; uske baad ka har second ka tick
-        # 100% client-side JS (setInterval) se hota hai jo sirf do DOM
-        # elements (#pk-time, #pk-date) update karta hai - koi st.rerun,
-        # koi Streamlit backend round-trip nahi. Isi liye har rerun/navigation
-        # par iska overhead ~0 hai aur 0.1 sec target wapas aa jaata hai.
-        initial_time = now.strftime("%I:%M:%S %p")
-        initial_date = now.strftime("%A, %d %b %Y")
+        # STATIC CLOCK (final fix - live JS ticking removed completely):
+        # setInterval version still re-injected its <script> tag into the
+        # DOM on every single rerun/navigation, and re-parsing + re-running
+        # that JS each time was what kept causing the ~1 sec lag - not just
+        # iframes. There is now NO JavaScript at all: Karachi time is
+        # computed once in Python per page load and rendered as a plain
+        # static HTML string. It shows the correct time/day at the moment
+        # the page loads and updates naturally on the next click/refresh -
+        # no live ticking, no iframe, no script, effectively 0 overhead.
+        pk_time_str = now.strftime("%I:%M:%S %p")
+        pk_date_str = now.strftime("%A, %d %b %Y")
         st.markdown(f'''
             <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
                         padding: 12px 20px; border-radius: 12px; text-align: center;
                         box-shadow: 0 4px 15px rgba(0,0,0,0.2); font-family: 'Source Sans Pro', sans-serif;">
                 <p style="margin:0; font-size:14px; color:#fff; font-weight:bold;">
-                    🕐 <b id="pk-time">{initial_time}</b>
+                    🕐 <b>{pk_time_str}</b>
                 </p>
                 <p style="margin:5px 0 0 0; font-size:11px; color:#E8EAF6;">
-                    <small id="pk-date">{initial_date}</small>{hijri_line}
+                    <small>{pk_date_str}</small>{hijri_line}
                 </p>
             </div>
-            <script>
-            (function() {{
-                if (window.__pkClockRunning) return;
-                window.__pkClockRunning = true;
-                var days = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
-                var months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-                setInterval(function() {{
-                    var d = new Date();
-                    var utc = d.getTime() + (d.getTimezoneOffset() * 60000);
-                    var pkt = new Date(utc + (5 * 3600000));
-                    var te = document.getElementById('pk-time');
-                    var de = document.getElementById('pk-date');
-                    if (te) {{
-                        te.innerText = pkt.toLocaleTimeString('en-US', {{hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:true}});
-                    }}
-                    if (de) {{
-                        de.innerText = days[pkt.getDay()] + ", " + String(pkt.getDate()).padStart(2,'0') + " " + months[pkt.getMonth()] + " " + pkt.getFullYear();
-                    }}
-                }}, 1000);
-            }})();
-            </script>
         ''', unsafe_allow_html=True)
     
     with col_notif:
