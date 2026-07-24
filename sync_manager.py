@@ -83,10 +83,10 @@ def trigger_immediate_background_upload(local_db_path="afzal_store.db"):
     """REQUIREMENT: har save ke turant baad (conn.commit() ke theek baad) yeh
     call karna - KHUD KABHI BLOCK NAHI HOTA (0.01 sec mein return ho jata
     hai). Agar db pichli upload ke baad se badal chuki hai, to Drive upload
-    ek background thread mein FAURAN (bina 5-second wait ke) shuru ho jati
-    hai. Turant ek chota, non-blocking st.toast dikhata hai taake user ko
-    pata chale ke sync ho raha hai - lekin iske khatam hone ka intezar kiye
-    bagair function turant wapas aa jata hai."""
+    turant ek background thread start karta hai - koi toast/popup nahi
+    dikhata (INVISIBLE SYNC), sirf sidebar ka 'Last Drive Sync' caption
+    khud-ba-khud update ho jata hai jab upload poori ho jati hai (via
+    refresh_sync_indicator_in_session())."""
     global _upload_in_progress
     try:
         if not os.path.exists(local_db_path):
@@ -99,11 +99,6 @@ def trigger_immediate_background_upload(local_db_path="afzal_store.db"):
             if _upload_in_progress:
                 return  # pehle se ek upload chal rahi hai, dobara shuru na karo
             _upload_in_progress = True
-
-        try:
-            st.toast("☁️ Google Drive par save ho raha hai...")
-        except Exception:
-            pass
 
         t = threading.Thread(
             target=_background_upload_worker,
@@ -118,29 +113,18 @@ def trigger_immediate_background_upload(local_db_path="afzal_store.db"):
 def refresh_sync_indicator_in_session():
     """App.py se HAR rerun par call karna safe hai - Drive/network ko
     KABHI touch nahi karta, sirf ek plain in-memory dict padhta hai, is liye
-    0.01 sec se bhi kam lagta hai. Jab background upload poori ho chuki ho
-    (last_success_ts badal chuka ho) to ek dafa 'Synced ✓' toast dikhata hai
-    aur sidebar ke 'Last Drive Sync' caption ke liye session_state update
-    kar deta hai."""
+    0.01 sec se bhi kam lagta hai. INVISIBLE SYNC: koi toast/popup nahi -
+    sirf sidebar ke 'Last Drive Sync' caption ke liye session_state chup-chaap
+    update kar deta hai jab bhi koi background upload kaamyabi se poori hoti
+    hai."""
     with _status_lock:
         last_success_ts = _sync_status["last_success_ts"]
         last_size_str = _sync_status["last_size_str"]
-        shown_ts = _sync_status["shown_ts"]
-        if last_success_ts and last_success_ts != shown_ts:
-            _sync_status["shown_ts"] = last_success_ts
-            new_completion = True
-        else:
-            new_completion = False
 
     if last_success_ts:
         now_str = datetime.fromtimestamp(last_success_ts).strftime("%I:%M:%S %p")
         st.session_state["_last_drive_sync_time"] = now_str
         st.session_state["_last_drive_sync_size"] = last_size_str or ""
-        if new_completion:
-            try:
-                st.toast(f"✅ Synced {now_str}")
-            except Exception:
-                pass
 
 
 @st.cache_resource(show_spinner=False)

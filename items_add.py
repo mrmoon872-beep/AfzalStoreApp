@@ -62,6 +62,7 @@ def ensure_items_schema():
         'barcode': 'TEXT',
         'expiry_date': 'TEXT',
         'photo': 'TEXT',
+        'photo_thumb': 'TEXT',
         'parent_id': 'INTEGER',
         'default_rate': 'REAL DEFAULT 0',
         'price': 'REAL DEFAULT 0',
@@ -393,37 +394,51 @@ def show_items_add():
                         st.error(f"❌ Barcode already used for '{duplicate_barcode[1]}'!")
                     else:
                         photo_path = ""
+                        photo_thumb_path = ""
                         if photo:
                             os.makedirs("item_photos", exist_ok=True)
-                            photo_path = f"item_photos/{name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg"
-                            # PERF FIX: 5000+ item photos future mein aa sakti hain - agar
-                            # har photo full-size (kai MB) save hoti to disk/loading dono
-                            # dheeme ho jate. Ab har photo ~500KB tak compress hoti hai.
+                            base_name = f"item_photos/{name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                            photo_path = f"{base_name}.jpg"
+                            photo_thumb_path = f"{base_name}_thumb.jpg"
+                            # 10,000-PHOTO SCALE FIX: pehle sirf ek ~500KB copy save hoti thi.
+                            # Ab do chhoti copies banti hain - 'main' (~500x500, ~35KB, detail
+                            # ke liye) aur 'thumb' (~120x120, ~8KB, list rows mein). List page
+                            # ab sirf halki thumbnail load karta hai - 100 items ek page par
+                            # bhi turant dikhte hain, aur Drive upload bhi chhota/tez hai.
                             with st.spinner("Photo compress ho rahi hai..."):
-                                compressed_bytes, compress_msg = image_compression.compress_image(photo)
-                            if compressed_bytes:
+                                main_bytes, thumb_bytes, compress_msg = image_compression.compress_image_dual(photo)
+                            if main_bytes:
                                 with open(photo_path, "wb") as f:
-                                    f.write(compressed_bytes)
+                                    f.write(main_bytes)
+                                if thumb_bytes:
+                                    with open(photo_thumb_path, "wb") as f:
+                                        f.write(thumb_bytes)
+                                else:
+                                    photo_thumb_path = ""
                                 if compress_msg:
                                     st.caption(compress_msg)
                                 try:
                                     import sync_manager
                                     sync_manager.upload_photo_to_drive_background(
-                                        compressed_bytes, os.path.basename(photo_path))
+                                        main_bytes, os.path.basename(photo_path))
+                                    if thumb_bytes:
+                                        sync_manager.upload_photo_to_drive_background(
+                                            thumb_bytes, os.path.basename(photo_thumb_path))
                                 except Exception:
                                     pass  # Drive na ho to koi masla nahi, local photo save ho chuki hai
                             else:
                                 photo_path = ""
+                                photo_thumb_path = ""
                                 st.warning(compress_msg or "⚠️ Photo save nahi ho saki - item baaki detail ke sath save ho raha hai.")
 
                         expiry_str = expiry_date.strftime("%Y-%m-%d") if expiry_date else ""
 
                         conn.execute('''INSERT INTO items
                                      (item_no, name, category, kharid_price, sale_price, base_unit, stock, min_stock,
-                                     barcode, expiry_date, photo, parent_id, price, agency_name)
-                                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                                     barcode, expiry_date, photo, photo_thumb, parent_id, price, agency_name)
+                                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                                      (item_no, name.strip(), category, kharid_price, sale_price, base_unit, stock,
-                                      min_stock, barcode.strip(), expiry_str, photo_path, parent_id, sale_price, selected_agency))
+                                      min_stock, barcode.strip(), expiry_str, photo_path, photo_thumb_path, parent_id, sale_price, selected_agency))
 
                         conn.commit()
                         cur = conn.execute("SELECT last_insert_rowid()")
@@ -542,6 +557,13 @@ def show_items_add():
                 sale_val = float(row.get('sale_price') or 0)
                 stock_val = float(row.get('stock') or 0)
                 photo_val = row.get('photo', '')
+                # LAZY PHOTOS FIX (10k-photo scale): list rows ab sirf halki
+                # 'thumb' (~8KB) load karte hain, bari 'main' photo (~35KB)
+                # nahi - 100 rows ek page par bhi turant load hote hain.
+                # Purane items jinke paas abhi thumb nahi hai (naye column se
+                # pehle ke), unke liye 'photo' (main) hi fallback ke taur par
+                # dikhaya jata hai.
+                photo_thumb_val = row.get('photo_thumb') or photo_val
                 category_val = row.get('category') or 'Other'
                 parent_id = row.get('parent_id')
                 item_no_val = int(row['item_no']) if row.get('item_no') is not None else "—"
@@ -549,8 +571,8 @@ def show_items_add():
                 with st.container():
                     col1, col2, col3, col4, col5 = st.columns([0.5, 2.5, 2.5, 1, 1])
                     with col1:
-                        if isinstance(photo_val, str) and photo_val.strip() != '' and os.path.exists(photo_val):
-                            st.image(photo_val, width=50)
+                        if isinstance(photo_thumb_val, str) and photo_thumb_val.strip() != '' and os.path.exists(photo_thumb_val):
+                            st.image(photo_thumb_val, width=50)
                         else:
                             st.markdown(f"<div style='text-align:center;font-size:11px;color:#888;font-weight:bold'>#{item_no_val}</div>", unsafe_allow_html=True)
                             st.write("📦")
@@ -1537,34 +1559,46 @@ Qty: {ir_row['Total_Qty']:g} &nbsp;|&nbsp; Avg Rate: Rs.{ir_row['Avg_Rate']:.0f}
             if submit:
                 try:
                     photo_path = str(item.get('photo') or '')
+                    photo_thumb_path = str(item.get('photo_thumb') or '')
                     if edit_photo:
                         os.makedirs("item_photos", exist_ok=True)
-                        photo_path = f"item_photos/{edit_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg"
+                        base_name = f"item_photos/{edit_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                        photo_path = f"{base_name}.jpg"
+                        photo_thumb_path = f"{base_name}_thumb.jpg"
                         with st.spinner("Photo compress ho rahi hai..."):
-                            compressed_bytes, compress_msg = image_compression.compress_image(edit_photo)
-                        if compressed_bytes:
+                            main_bytes, thumb_bytes, compress_msg = image_compression.compress_image_dual(edit_photo)
+                        if main_bytes:
                             with open(photo_path, "wb") as f:
-                                f.write(compressed_bytes)
+                                f.write(main_bytes)
+                            if thumb_bytes:
+                                with open(photo_thumb_path, "wb") as f:
+                                    f.write(thumb_bytes)
+                            else:
+                                photo_thumb_path = ""
                             if compress_msg:
                                 st.caption(compress_msg)
                             try:
                                 import sync_manager
                                 sync_manager.upload_photo_to_drive_background(
-                                    compressed_bytes, os.path.basename(photo_path))
+                                    main_bytes, os.path.basename(photo_path))
+                                if thumb_bytes:
+                                    sync_manager.upload_photo_to_drive_background(
+                                        thumb_bytes, os.path.basename(photo_thumb_path))
                             except Exception:
                                 pass
                         else:
                             photo_path = str(item.get('photo') or '')
+                            photo_thumb_path = str(item.get('photo_thumb') or '')
                             st.warning(compress_msg or "⚠️ Nayi photo save nahi ho saki - purani photo rehne di gayi hai.")
 
                     expiry_str = edit_expiry.strftime("%Y-%m-%d") if edit_expiry else ""
 
                     conn2.execute(
                         '''UPDATE items SET name=?, category=?, kharid_price=?, sale_price=?, price=?,
-                           base_unit=?, stock=?, min_stock=?, barcode=?, expiry_date=?, photo=? WHERE id=?''',
+                           base_unit=?, stock=?, min_stock=?, barcode=?, expiry_date=?, photo=?, photo_thumb=? WHERE id=?''',
                         (edit_name.strip(), edit_category, edit_kharid, edit_sale, edit_sale,
                          edit_unit, edit_stock, edit_min_stock, edit_barcode.strip(),
-                         expiry_str, photo_path, item_id)
+                         expiry_str, photo_path, photo_thumb_path, item_id)
                     )
                     conn2.commit()
 

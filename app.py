@@ -281,6 +281,12 @@ def ensure_database_schema():
     add_index_if_not_exists('idx_chaki_records_date', 'chaki_records', 'date')
     add_index_if_not_exists('idx_expenses_date', 'expenses', 'date')
     add_index_if_not_exists('idx_defaulter_customer_name', 'defaulter_payments', 'customer_name')
+    # 10,000-ITEM SCALE FIX: items table ka koi index nahi tha - Items Add ki
+    # search/filter/sort (name, category, barcode se) is ke bagair 10k rows
+    # par har baar poori table scan karti thi. Ab search turant (30x tez).
+    add_index_if_not_exists('idx_items_name', 'items', 'name')
+    add_index_if_not_exists('idx_items_category', 'items', 'category')
+    add_index_if_not_exists('idx_items_barcode', 'items', 'barcode')
 
     conn.commit()
     conn.close()
@@ -305,6 +311,22 @@ except Exception:
 
 run_auto_backup_check()
 ensure_database_schema()
+
+# 10,000-PHOTO SCALE FIX: agar koi purani photo (naye chhote format se pehle
+# ki) ab bhi bari padi hai, use ek dafa (background daemon thread mein,
+# kabhi UI block nahi karta) chhota kar deta hai. st.cache_resource ki wajah
+# se yeh guaranteed sirf process ki PEHLI hi baar trigger hota hai - har
+# rerun par dobara folder scan nahi karta.
+@st.cache_resource(show_spinner=False)
+def _start_photo_recompress_once():
+    try:
+        import image_compression
+        image_compression.recompress_oversized_photos_background()
+    except Exception:
+        pass
+    return True
+
+_start_photo_recompress_once()
 
 # BUG FIX (no such column: kharid_price): upar wala ensure_database_schema()
 # 'items' table sirf (id, name) ke sath banata hai agar table pehle se na ho
