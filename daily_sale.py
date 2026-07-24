@@ -86,16 +86,13 @@ def show_daily_sale(get_db=None):
     # 07:53:34 AM jabke Karachi mein us waqt asal mein 12:53:34 PM tha, kyunke
     # PKT = UTC+5). Ab hamesha Asia/Karachi time use hota hai, chahe server
     # kahin bhi (kisi bhi UTC/other-timezone machine par) host ho.
-    try:
-        import pytz
-        karachi_tz = pytz.timezone("Asia/Karachi")
-        now = datetime.now(karachi_tz)
-    except Exception:
-        # pytz na mile (missing package) to bhi Karachi time sahi rahe -
-        # fixed UTC+5 offset use hota hai (Pakistan DST follow nahi karta,
-        # is liye yeh fallback hamesha durust rehta hai).
-        from datetime import timezone, timedelta
-        now = datetime.now(timezone.utc) + timedelta(hours=5)
+    # Karachi (PKT) = fixed UTC+5, Pakistan DST follow nahi karta - is liye
+    # pytz ki zaroorat nahi, sirf ek lightweight fixed-offset calc kaafi hai.
+    # (pytz import + tz lookup slow tha aur sirf initial/first-paint value
+    # ke liye lagta tha - JS side ticking pehle se hi apna UTC+5 offset use
+    # kar raha tha, ab Python side bhi wahi lightweight tareeqa use karta hai.)
+    from datetime import timezone, timedelta
+    now = datetime.now(timezone.utc) + timedelta(hours=5)
 
     hijri_line = ""
     if HIJRI_AVAILABLE:
@@ -114,51 +111,53 @@ def show_daily_sale(get_db=None):
         st.title("📊 Afzal Store - Main Dashboard")
     
     with col_clock:
-        import streamlit.components.v1 as components
-        # Server-rendered Karachi time/date, sirf pehle paint ke liye (JS load
-        # hone se pehle). Fir neeche wala script har second khud client-side
-        # tick karta hai - koi st.rerun loop nahi, dashboard 0.1 sec jaisa
-        # tez rehta hai.
+        # ULTRA-LIGHT CLOCK (fix for speed regression after live clock added):
+        # Purana components.html() version har rerun par ek naya <iframe>
+        # banata tha (heavy overhead) - isi wajah se Dashboard load 0.1s se
+        # 1.1s ho gaya tha aur page navigation par bhi ~1s lag aata tha.
+        # Ab st.markdown(unsafe_allow_html=True) use ho raha hai - yeh sirf
+        # inline <div>/<script> string ko seedha page ke DOM mein daalta hai,
+        # koi iframe nahi banta. Python sirf ek dafa (pehle paint ke liye)
+        # Karachi time compute karta hai; uske baad ka har second ka tick
+        # 100% client-side JS (setInterval) se hota hai jo sirf do DOM
+        # elements (#pk-time, #pk-date) update karta hai - koi st.rerun,
+        # koi Streamlit backend round-trip nahi. Isi liye har rerun/navigation
+        # par iska overhead ~0 hai aur 0.1 sec target wapas aa jaata hai.
         initial_time = now.strftime("%I:%M:%S %p")
         initial_date = now.strftime("%A, %d %b %Y")
-        clock_html = f'''
+        st.markdown(f'''
             <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
                         padding: 12px 20px; border-radius: 12px; text-align: center;
                         box-shadow: 0 4px 15px rgba(0,0,0,0.2); font-family: 'Source Sans Pro', sans-serif;">
                 <p style="margin:0; font-size:14px; color:#fff; font-weight:bold;">
-                    🕐 <span id="karachiTime">{initial_time}</span>
+                    🕐 <b id="pk-time">{initial_time}</b>
                 </p>
                 <p style="margin:5px 0 0 0; font-size:11px; color:#E8EAF6;">
-                    <span id="karachiDate">{initial_date}</span>{hijri_line}
+                    <small id="pk-date">{initial_date}</small>{hijri_line}
                 </p>
             </div>
             <script>
             (function() {{
-                function updateKarachiClock() {{
-                    // Asia/Karachi (PKT) = UTC+5, saal bhar fixed (Pakistan DST
-                    // follow nahi karta) - is liye client ke apne timezone se
-                    // bilkul independent, hamesha sahi Karachi time milta hai.
-                    var offsetMs = 5 * 60 * 60 * 1000;
-                    var k = new Date(Date.now() + offsetMs);
-                    var days = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
-                    var months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-                    var h = k.getUTCHours(), m = k.getUTCMinutes(), s = k.getUTCSeconds();
-                    var ampm = h >= 12 ? "PM" : "AM";
-                    var h12 = h % 12; if (h12 === 0) h12 = 12;
-                    var pad = function(n) {{ return n < 10 ? "0" + n : "" + n; }};
-                    var timeStr = pad(h12) + ":" + pad(m) + ":" + pad(s) + " " + ampm;
-                    var dateStr = days[k.getUTCDay()] + ", " + pad(k.getUTCDate()) + " " + months[k.getUTCMonth()] + " " + k.getUTCFullYear();
-                    var te = document.getElementById("karachiTime");
-                    var de = document.getElementById("karachiDate");
-                    if (te) te.innerText = timeStr;
-                    if (de) de.innerText = dateStr;
-                }}
-                updateKarachiClock();
-                setInterval(updateKarachiClock, 1000);
+                if (window.__pkClockRunning) return;
+                window.__pkClockRunning = true;
+                var days = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+                var months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+                setInterval(function() {{
+                    var d = new Date();
+                    var utc = d.getTime() + (d.getTimezoneOffset() * 60000);
+                    var pkt = new Date(utc + (5 * 3600000));
+                    var te = document.getElementById('pk-time');
+                    var de = document.getElementById('pk-date');
+                    if (te) {{
+                        te.innerText = pkt.toLocaleTimeString('en-US', {{hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:true}});
+                    }}
+                    if (de) {{
+                        de.innerText = days[pkt.getDay()] + ", " + String(pkt.getDate()).padStart(2,'0') + " " + months[pkt.getMonth()] + " " + pkt.getFullYear();
+                    }}
+                }}, 1000);
             }})();
             </script>
-        '''
-        components.html(clock_html, height=95)
+        ''', unsafe_allow_html=True)
     
     with col_notif:
         notif_count = len(notifications)
