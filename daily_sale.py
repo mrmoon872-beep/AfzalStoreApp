@@ -347,111 +347,146 @@ def show_daily_sale(get_db=None):
     st.divider()
     st.subheader("💳 Udhaar Khatta - Top 10 Customers")
 
+    # Card grid styling (Streamlit's own st.columns already stacks to 1 column
+    # on narrow/mobile screens automatically, so no extra media-query hack needed).
+    st.markdown('''
+        <style>
+        .udhaar-card-wrap {
+            border-radius: 12px;
+            padding: 12px 14px;
+            margin-bottom: 10px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.18);
+        }
+        </style>
+    ''', unsafe_allow_html=True)
+
     search_udhaar = st.text_input("🔍 Customer Ka Naam Search Karein (galat spelling bhi chalegi)...", placeholder="Customer ka naam likhein...", key="udhaar_search")
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # PERF FIX: pool ek dafa cache hota hai (15 sec) - search karte waqt dobara
-    # DB hit nahi hoti, sirf isi pool par fuzzy filter chalta hai.
+    # BUG FIX: pehle query sirf "total_udhaar > 0" wale customers laati thi -
+    # is wajah se agar filhaal koi customer ka net balance 0 ho (ya calculation
+    # mismatch ho), poora section khali dikhta tha "Koi udhaar wala customer
+    # nahi mila" - chahe customers/udhaar entries maujood hon. Ab: pehle dues
+    # (>0) wale customers try karo; agar koi na milay to recent 10 customers
+    # (0 balance sahi hai) dikha do, taake yeh section kabhi bilkul khali na lage.
+    #
+    # PERF: pool ek dafa cache hota hai (15 sec) - search/pagination ke waqt
+    # dobara DB hit nahi hoti, sirf isi cached pool par fuzzy filter chalta hai.
     @st.cache_data(ttl=15, show_spinner=False)
     def _cached_udhaar_pool():
         try:
-            return pd.read_sql_query("""
+            df_dues = pd.read_sql_query("""
                 SELECT c.id, c.name, c.phone, c.photo,
                     IFNULL(SUM(CASE WHEN u.type='udhaar' THEN u.amount ELSE -u.amount END), 0) as total_udhaar
                 FROM customers c LEFT JOIN udhaar u ON c.id = u.customer_id
                 GROUP BY c.id, c.name, c.phone, c.photo
-                HAVING total_udhaar > 0 ORDER BY total_udhaar DESC LIMIT 50
+                HAVING total_udhaar > 0
+                ORDER BY total_udhaar DESC LIMIT 100
             """, conn)
+            print(f"[Dashboard Debug] Udhaar Top10 query -> customers with dues found: {len(df_dues)}")
+            if not df_dues.empty:
+                return df_dues
+
+            # Koi bhi customer ka dues > 0 nahi mila - recent 10 customers
+            # dikhao (0 balance) taake section kabhi khali na lage.
+            df_recent = pd.read_sql_query("""
+                SELECT c.id, c.name, c.phone, c.photo,
+                    IFNULL(SUM(CASE WHEN u.type='udhaar' THEN u.amount ELSE -u.amount END), 0) as total_udhaar
+                FROM customers c LEFT JOIN udhaar u ON c.id = u.customer_id
+                GROUP BY c.id, c.name, c.phone, c.photo
+                ORDER BY c.id DESC LIMIT 10
+            """, conn)
+            print(f"[Dashboard Debug] Udhaar Top10 query -> no dues, showing recent customers: {len(df_recent)}")
+            return df_recent
         except Exception as e:
             st.error(f"❌ Udhaar data load karne mein error: {e}")
             return pd.DataFrame()
 
-    df_udhaar = _cached_udhaar_pool()
+    df_udhaar_pool = _cached_udhaar_pool()
 
-    if not df_udhaar.empty and search_udhaar:
+    if not df_udhaar_pool.empty and search_udhaar:
         search_lower = search_udhaar.strip().lower()
-        names_lower = df_udhaar['name'].astype(str).str.lower()
+        names_lower = df_udhaar_pool['name'].astype(str).str.lower()
         starts_with_mask = names_lower.str.startswith(search_lower)
         contains_mask = names_lower.str.contains(search_lower, na=False, regex=False)
-        substring_matches = df_udhaar[starts_with_mask | contains_mask]
+        substring_matches = df_udhaar_pool[starts_with_mask | contains_mask]
 
         if len(substring_matches) >= 1:
-            df_udhaar = substring_matches
+            df_udhaar_pool = substring_matches
         else:
-            all_names = df_udhaar['name'].astype(str).tolist()
-            close = difflib.get_close_matches(search_udhaar, all_names, n=10, cutoff=0.5)
-            df_udhaar = df_udhaar[df_udhaar['name'].astype(str).isin(close)]
+            all_names = df_udhaar_pool['name'].astype(str).tolist()
+            close = difflib.get_close_matches(search_udhaar, all_names, n=25, cutoff=0.5)
+            df_udhaar_pool = df_udhaar_pool[df_udhaar_pool['name'].astype(str).isin(close)]
 
-    df_udhaar = df_udhaar.head(10)
+    # PAGINATION: 10 se shuru hoti hai, "Aur Dikhao" dabane se +10 (poora pool
+    # ek sath load nahi hota - dashboard 0.1 sec jaisa tez rehta hai).
+    if 'dashboard_udhaar_limit' not in st.session_state:
+        st.session_state.dashboard_udhaar_limit = 10
+    if st.session_state.get('_last_udhaar_search') != search_udhaar:
+        # Search badalte hi limit wapas 10 par - naye results shuru se dikhein.
+        st.session_state.dashboard_udhaar_limit = 10
+        st.session_state['_last_udhaar_search'] = search_udhaar
+
+    udhaar_limit = st.session_state.dashboard_udhaar_limit
+    df_udhaar = df_udhaar_pool.head(udhaar_limit)
 
     if not df_udhaar.empty:
-        colors = [
-            ("linear-gradient(135deg, #FF6B6B 0%, #FF8E53 100%)", "#FF6B6B"),
-            ("linear-gradient(135deg, #4ECDC4 0%, #44A08D 100%)", "#44A08D"),
-            ("linear-gradient(135deg, #667EEA 0%, #764BA2 100%)", "#764BA2"),
-            ("linear-gradient(135deg, #F093FB 0%, #F5576C 100%)", "#F5576C"),
-            ("linear-gradient(135deg, #FA709A 0%, #FEE140 100%)", "#FA709A"),
-            ("linear-gradient(135deg, #30CFD0 0%, #330867 100%)", "#330867"),
-            ("linear-gradient(135deg, #A8EDEA 0%, #FED6E3 100%)", "#5bb8b3"),
-            ("linear-gradient(135deg, #FFD89B 0%, #19547B 100%)", "#19547B"),
-            ("linear-gradient(135deg, #D299C2 0%, #FEF9D7 100%)", "#D299C2"),
-            ("linear-gradient(135deg, #89F7FE 0%, #66A6FF 100%)", "#66A6FF"),
-        ]
+        colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8',
+                  '#F7DC6F', '#BB8FCE', '#85C1E2', '#F8C471', '#82E0AA']
 
-        for idx, row in df_udhaar.iterrows():
-            color_idx = idx % len(colors)
-            gradient, solid = colors[color_idx]
+        # GRID: 2 columns on desktop, Streamlit auto-stacks to 1 column on mobile.
+        card_cols = st.columns(2)
+        for grid_idx, (_, row) in enumerate(df_udhaar.iterrows()):
+            color = colors[grid_idx % len(colors)]
             customer_name = row['name']
             customer_id = row['id']
             total_amount = float(row['total_udhaar'])
-            phone = row['phone'] if row['phone'] else "No Phone"
             photo_data = row['photo']
+            initial = str(customer_name)[0].upper() if customer_name else "?"
+            avatar_fallback = f'<div style="width:80px; height:80px; border-radius:50%; background:rgba(255,255,255,0.35); display:flex; align-items:center; justify-content:center; font-size:32px; font-weight:bold; color:#fff; flex-shrink:0;">{initial}</div>'
 
             if photo_data and len(photo_data) > 0:
                 try:
                     img_base64 = base64.b64encode(photo_data).decode()
-                    photo_html = f'<img src="data:image/png;base64,{img_base64}" style="width:50px; height:50px; border-radius:50%; object-fit:cover; border:3px solid white; margin-right:15px;">'
+                    photo_html = f'<img src="data:image/png;base64,{img_base64}" style="width:80px; height:80px; border-radius:50%; object-fit:cover; border:3px solid white; flex-shrink:0;">'
                 except Exception:
-                    photo_html = '<div style="width:50px; height:50px; border-radius:50%; background:#fff; display:flex; align-items:center; justify-content:center; font-size:24px; margin-right:15px;">👤</div>'
+                    photo_html = avatar_fallback
             else:
-                photo_html = '<div style="width:50px; height:50px; border-radius:50%; background:#fff; display:flex; align-items:center; justify-content:center; font-size:24px; margin-right:15px;">👤</div>'
+                photo_html = avatar_fallback
 
             display_amount = f"Rs. {total_amount:,.2f}" if show_amounts else "••••••"
 
-            st.markdown(f'''
-                <div style="background: {gradient};
-                    padding: 15px 20px; border-radius: 12px 12px 0 0; margin-bottom: 0;
-                    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-                    display: flex; align-items: center; justify-content: space-between;">
-                    <div style="display: flex; align-items: center;">
-                        {photo_html}
-                        <div>
-                            <p style="margin:0; font-size:18px; font-weight:bold; color:#fff; text-shadow: 1px 1px 2px rgba(0,0,0,0.3);">{customer_name}</p>
-                            <p style="margin:3px 0 0 0; font-size:13px; color:#fff; opacity:0.9;">📞 {phone}</p>
+            with card_cols[grid_idx % 2]:
+                st.markdown(f'''
+                    <div class="udhaar-card-wrap" style="background:{color};">
+                        <div style="display:flex; align-items:center; gap:12px;">
+                            {photo_html}
+                            <div>
+                                <p style="margin:0; font-size:16px; font-weight:bold; color:#fff; text-shadow:1px 1px 2px rgba(0,0,0,0.25);">{customer_name}</p>
+                                <p style="margin:4px 0 0 0; font-size:12px; color:#fff; opacity:0.85;">Total Udhaar</p>
+                                <p style="margin:2px 0 0 0; font-size:20px; font-weight:bold; color:#fff; text-shadow:1px 1px 2px rgba(0,0,0,0.25);">{display_amount}</p>
+                            </div>
                         </div>
                     </div>
-                    <div style="text-align: right;">
-                        <p style="margin:0; font-size:12px; color:#fff; opacity:0.8;">Total Udhaar</p>
-                        <p style="margin:5px 0 0 0; font-size:22px; font-weight:bold; color:#fff; text-shadow: 1px 1px 2px rgba(0,0,0,0.3);">{display_amount}</p>
-                    </div>
-                </div>
-            ''', unsafe_allow_html=True)
+                ''', unsafe_allow_html=True)
 
-            # SHORTCUT CLICK: is button ko seedha card ke neeche, bina gap ke chipka
-            # diya hai (CSS se) taake yeh ek hi cohesive clickable card lage. Dabate
-            # hi seedha Udhaar Khatta khul kar isi customer ka khata dikhayega.
-            st.markdown(f'<style>div[data-testid="stButton"] > button[kind="secondary"]#khata_shortcut_{customer_id} {{ background:{solid}!important; }}</style>', unsafe_allow_html=True)
-            if st.button(f"➡️ {customer_name} Ka Khata Kholein", key=f"khata_shortcut_{customer_id}", use_container_width=True):
-                st.session_state['selected_customer_id'] = customer_id
-                st.session_state.force_open_khata = True
-                # BUG FIX: seedha "st.session_state.menu = ..." set karna crash deta
-                # tha (StreamlitAPIException) kyunke menu ek widget se bound hai.
-                # Ab safe '_pending_menu' flag use hota hai jo app.py sidebar render
-                # hone se PEHLE apply karta hai.
-                st.session_state['_pending_menu'] = "📒 Udhaar Khatta"
+                # SHORTCUT: seedha Udhaar Khatta page par isi customer ka khata khol deta hai.
+                if st.button("📖 Khata Kholo", key=f"khata_shortcut_{customer_id}", use_container_width=True):
+                    st.session_state['selected_customer_id'] = customer_id
+                    st.session_state.force_open_khata = True
+                    # BUG FIX: seedha "st.session_state.menu = ..." set karna crash deta
+                    # tha (StreamlitAPIException) kyunke menu ek widget se bound hai.
+                    # Ab safe '_pending_menu' flag use hota hai jo app.py sidebar render
+                    # hone se PEHLE apply karta hai.
+                    st.session_state['_pending_menu'] = "📒 Udhaar Khatta"
+                    st.rerun()
+
+        if len(df_udhaar_pool) > udhaar_limit:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("⬇️ Aur Dikhao (Load More 10)", key="udhaar_load_more", use_container_width=True):
+                st.session_state.dashboard_udhaar_limit += 10
                 st.rerun()
-            st.markdown("<div style='margin-bottom:12px;'></div>", unsafe_allow_html=True)
     else:
         st.info("🔍 Koi udhaar wala customer nahi mila")
 
