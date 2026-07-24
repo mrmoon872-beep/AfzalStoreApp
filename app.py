@@ -381,26 +381,34 @@ if security_gate.is_admin_request():
     security_gate.show_admin_panel()
     st.stop()
 
-# ==================== GOOGLE DRIVE 2-WAY SYNC ====================
+# ==================== GOOGLE DRIVE 2-WAY SYNC (SPEED FIX: fully non-blocking) ====================
 # Cross-device download-check aur dated backup background mein hote hain
-# (chup-chaap, kabhi page load dheema nahi karte).
+# (chup-chaap, kabhi page load dheega nahi karte).
 try:
     sync_manager.run_full_sync(DB_FILE)
 except Exception:
     pass  # sync mein koi bhi masla aaye, app kabhi is wajah se na ruke
 
-# REQUIREMENT #1 FIX (Streamlit Cloud "save then turant tab band" data loss):
-# Streamlit har save/interaction ke baad poori app.py ko dobara (isi rerun
-# mein) chalata hai - is liye yahan, page render hone se PEHLE, agar local
-# database pichli upload ke baad se badal chuki hai (yani abhi Nayi Sale,
-# Udhaar Khatta, Items Add, Chaki, Expenses, Agencies, ya Roz Ka Roll Nama
-# mein se kisi mein bhi save hua hai), to Drive par TURANT (blocking, 5-second
-# wait ke bagair) upload ho jata hai - kisi bhi individual save-button ko
-# alag se chhedne ki zaroorat nahi, kyunke yeh har save ke baad wale rerun ko
-# khud pakar leta hai. Chota "Synced ✓" toast dikhta hai taake user 1-2
-# second ruk kar hi tab band kare.
+# SPEED FIX: pehle yahan BLOCKING upload thi (page render se pehle Drive ka
+# jawab ka intezar) - is se HAR click/navigation 3-5 second "atak" jata tha.
+# Ab trigger_immediate_background_upload() khud sirf ek mtime check karta hai
+# aur (agar kuch naya save hua ho to) ek background thread START kar ke
+# FAURAN (0.01 sec) wapas aa jata hai - Drive ka jawab kabhi wait nahi kiya
+# jata. Yahan se call karne ka fayda: Nayi Sale, Udhaar Khatta, Items Add,
+# Chaki, Expenses, Agencies, Roz Ka Roll Nama - in mein se kisi mein bhi save
+# ke turant baad wale isi rerun mein yeh khud pakar leta hai, kisi file ko
+# alag se chhedne ki zaroorat nahi.
 try:
-    sync_manager.blocking_upload_if_changed(DB_FILE)
+    sync_manager.trigger_immediate_background_upload(DB_FILE)
+except Exception:
+    pass
+
+# Yeh sirf ek plain in-memory dict padhta hai (Drive/network ko kabhi touch
+# nahi karta) - is liye 0.01 sec se bhi kam lagta hai. Jab peeche chal rahi
+# background upload poori ho chuki ho to "Synced ✓" toast aur sidebar
+# indicator update kar deta hai.
+try:
+    sync_manager.refresh_sync_indicator_in_session()
 except Exception:
     pass
 
@@ -509,11 +517,11 @@ with st.sidebar:
     # removes the desync - st.session_state.menu is already initialized above (line 270).
     st.radio("Menu Chuno", menu_options, key="menu", label_visibility="collapsed")
 
-    # REQUIREMENT #3: "Last Drive Sync" indicator - halka sa, kisi ko disturb
-    # nahi karta, bas user ko yaqeen dilata hai ke uska data Drive par ja
-    # chuka hai (aur kab). blocking_upload_if_changed() ise upar hi
-    # session_state mein set kar chuka hota hai jab bhi koi asal upload
-    # hoti hai.
+    # "Last Drive Sync" indicator - halka sa, kisi ko disturb nahi karta, bas
+    # user ko yaqeen dilata hai ke uska data Drive par ja chuka hai (aur
+    # kab). sync_manager.refresh_sync_indicator_in_session() ise upar hi
+    # session_state mein set kar chuka hota hai jab bhi koi background
+    # upload kaamyabi se poori hoti hai.
     _last_sync_time = st.session_state.get("_last_drive_sync_time")
     if _last_sync_time:
         _last_sync_size = st.session_state.get("_last_drive_sync_size", "")
