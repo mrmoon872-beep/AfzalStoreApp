@@ -24,24 +24,33 @@ def show_backup_restore():
         "Yeh page kholna bhi zaroori nahi - sirf app istemal karte rahein."
     )
 
-    # ==================== LOCAL BACKUP (safe: sirf CREATE karta hai) ====================
-    st.markdown("### 💻 Local Backup (Computer)")
-    if st.button("Backup Banao", type="primary"):
-        free_mb = _free_space_mb()
-        if free_mb is not None and free_mb < 100:
-            st.error(f"❌ Computer ki disk space bohot kam hai ({free_mb:.0f} MB baaki)! Pehle jagah khali karein, phir backup banayein.")
-        else:
-            backup_name = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
-            try:
-                shutil.copy(DB_FILE, os.path.join(BACKUP_FOLDER, backup_name))
-                st.success(f"Backup ban gaya: {backup_name}")
-            except OSError as e:
-                if "space" in str(e).lower() or "disk" in str(e).lower():
-                    st.error("❌ Disk space kam hai, backup nahi ban saka. Jagah khali karein.")
-                else:
-                    st.error(f"Backup banane mein masla aaya: {e}")
+    # REQUIREMENT #4: "Local Backup (Computer)" sirf tab dikhana jab app
+    # user ke apne PC/localhost par chal rahi ho - Streamlit Cloud (ya kisi
+    # aur ephemeral-storage hosting) par yeh disk restart par mit jati hai,
+    # is liye wahan dikhana ulta ghalat-fehmi paida karta hai ke data
+    # "mahfooz" hai jabke woh nahi hota. Online hone par sirf Google Drive
+    # section dikhaya jata hai.
+    _on_cloud = gdrive.is_running_on_cloud()
 
-    st.divider()
+    if not _on_cloud:
+        # ==================== LOCAL BACKUP (safe: sirf CREATE karta hai) ====================
+        st.markdown("### 💻 Local Backup (Computer)")
+        if st.button("Backup Banao", type="primary"):
+            free_mb = _free_space_mb()
+            if free_mb is not None and free_mb < 100:
+                st.error(f"❌ Computer ki disk space bohot kam hai ({free_mb:.0f} MB baaki)! Pehle jagah khali karein, phir backup banayein.")
+            else:
+                backup_name = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+                try:
+                    shutil.copy(DB_FILE, os.path.join(BACKUP_FOLDER, backup_name))
+                    st.success(f"Backup ban gaya: {backup_name}")
+                except OSError as e:
+                    if "space" in str(e).lower() or "disk" in str(e).lower():
+                        st.error("❌ Disk space kam hai, backup nahi ban saka. Jagah khali karein.")
+                    else:
+                        st.error(f"Backup banane mein masla aaya: {e}")
+
+        st.divider()
 
     # ==================== GOOGLE DRIVE BACKUP ====================
     st.markdown("### ☁️ Google Drive Backup")
@@ -257,35 +266,36 @@ def show_backup_restore():
                         st.session_state["_confirm_dated_restore"] = False
                         st.rerun()
 
-        st.divider()
-        st.markdown("#### 💻 Local - Purani Backups")
-        try:
-            local_backups = os.listdir(BACKUP_FOLDER) if os.path.exists(BACKUP_FOLDER) else []
-        except OSError:
-            local_backups = []
+        if not _on_cloud:
+            st.divider()
+            st.markdown("#### 💻 Local - Purani Backups")
+            try:
+                local_backups = os.listdir(BACKUP_FOLDER) if os.path.exists(BACKUP_FOLDER) else []
+            except OSError:
+                local_backups = []
 
-        if not local_backups:
-            st.info("Koi local backup nahi mila")
-        else:
-            selected_local = st.selectbox("Local Backup Chuno", sorted(local_backups, reverse=True), key="local_restore_select")
-            if not st.session_state.get("_confirm_local_restore"):
-                if st.button("Restore Karo (Local)", key="_local_restore_btn"):
-                    st.session_state["_confirm_local_restore"] = True
-                    st.rerun()
+            if not local_backups:
+                st.info("Koi local backup nahi mila")
             else:
-                st.error("⚠️ PAKKA? AAJ KA data mit kar is purani local file ka data aa jayega.")
-                lc1, lc2 = st.columns(2)
-                with lc1:
-                    if st.button("✅ Haan, Local Se Restore Karo", type="primary", key="_local_restore_yes"):
-                        try:
-                            shutil.copy(os.path.join(BACKUP_FOLDER, selected_local), DB_FILE)
-                            st.session_state["_confirm_local_restore"] = False
-                            st.cache_resource.clear()
-                            st.success("Restore ho gaya! App restart ho rahi hai...")
-                            st.rerun()
-                        except OSError as e:
-                            st.error(f"Restore karne mein masla aaya: {e}")
-                with lc2:
-                    if st.button("❌ Cancel", key="_local_restore_no"):
-                        st.session_state["_confirm_local_restore"] = False
+                selected_local = st.selectbox("Local Backup Chuno", sorted(local_backups, reverse=True), key="local_restore_select")
+                if not st.session_state.get("_confirm_local_restore"):
+                    if st.button("Restore Karo (Local)", key="_local_restore_btn"):
+                        st.session_state["_confirm_local_restore"] = True
                         st.rerun()
+                else:
+                    st.error("⚠️ PAKKA? AAJ KA data mit kar is purani local file ka data aa jayega.")
+                    lc1, lc2 = st.columns(2)
+                    with lc1:
+                        if st.button("✅ Haan, Local Se Restore Karo", type="primary", key="_local_restore_yes"):
+                            try:
+                                shutil.copy(os.path.join(BACKUP_FOLDER, selected_local), DB_FILE)
+                                st.session_state["_confirm_local_restore"] = False
+                                st.cache_resource.clear()
+                                st.success("Restore ho gaya! App restart ho rahi hai...")
+                                st.rerun()
+                            except OSError as e:
+                                st.error(f"Restore karne mein masla aaya: {e}")
+                    with lc2:
+                        if st.button("❌ Cancel", key="_local_restore_no"):
+                            st.session_state["_confirm_local_restore"] = False
+                            st.rerun()

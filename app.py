@@ -285,6 +285,24 @@ def ensure_database_schema():
     conn.commit()
     conn.close()
 
+# ==================== STREAMLIT CLOUD DATA-LOSS FIX: BLOCKING STARTUP RECOVERY ====================
+# REQUIREMENT #2: yeh sab se PEHLE chalta hai - ensure_database_schema() /
+# ensure_items_schema() (jo CREATE TABLE karte hain) se bhi pehle. Wajah: agar
+# yeh CREATE TABLE calls pehle chal jayen aur local file abhi tak maujood na
+# ho (Streamlit Cloud jaisi ephemeral storage par restart ke baad), to woh
+# khud hi ek KHALI local file bana dete hain jiska mtime "abhi" ho jata hai -
+# is se aage ka sync check use "up-to-date" samajh kar asal Drive data kabhi
+# download hi nahi karta. Isi liye yeh check un sab se PEHLE, aur BLOCKING
+# (background thread nahi) hai - taake user ko restart ke baad kabhi khaali
+# Dashboard/0 customers na dikhein, chahe usके liye ek pal rukna hi kyun na
+# pare. Internet na ho ya Drive connect na ho to yeh chup-chaap skip ho jata
+# hai - baaki app normal empty-state se chalta rehta hai.
+try:
+    import sync_manager as _sync_manager_startup
+    _sync_manager_startup.blocking_startup_recovery(DB_FILE)
+except Exception:
+    pass
+
 run_auto_backup_check()
 ensure_database_schema()
 
@@ -363,16 +381,28 @@ if security_gate.is_admin_request():
     security_gate.show_admin_panel()
     st.stop()
 
-# ==================== GOOGLE DRIVE 2-WAY SYNC (100% SILENT) ====================
-# Har rerun par call karna safe hai - khud kabhi block nahi karta (poora kaam
-# ek background thread mein hota hai) aur KABHI koi popup/toast/message nahi
-# dikhata - user ko Dashboard, Nayi Sale, Udhaar Khatta waghera istemal karte
-# waqt is ka bilkul pata nahi chalega. Backup & Restore page khole bagair bhi
-# offline<->online data khud-ba-khud sync hota rehta hai.
+# ==================== GOOGLE DRIVE 2-WAY SYNC ====================
+# Cross-device download-check aur dated backup background mein hote hain
+# (chup-chaap, kabhi page load dheema nahi karte).
 try:
     sync_manager.run_full_sync(DB_FILE)
 except Exception:
     pass  # sync mein koi bhi masla aaye, app kabhi is wajah se na ruke
+
+# REQUIREMENT #1 FIX (Streamlit Cloud "save then turant tab band" data loss):
+# Streamlit har save/interaction ke baad poori app.py ko dobara (isi rerun
+# mein) chalata hai - is liye yahan, page render hone se PEHLE, agar local
+# database pichli upload ke baad se badal chuki hai (yani abhi Nayi Sale,
+# Udhaar Khatta, Items Add, Chaki, Expenses, Agencies, ya Roz Ka Roll Nama
+# mein se kisi mein bhi save hua hai), to Drive par TURANT (blocking, 5-second
+# wait ke bagair) upload ho jata hai - kisi bhi individual save-button ko
+# alag se chhedne ki zaroorat nahi, kyunke yeh har save ke baad wale rerun ko
+# khud pakar leta hai. Chota "Synced ✓" toast dikhta hai taake user 1-2
+# second ruk kar hi tab band kare.
+try:
+    sync_manager.blocking_upload_if_changed(DB_FILE)
+except Exception:
+    pass
 
 # PERF FIX: setup_pwa() disk par icons/manifest likhta hai - is se sirf ek dafa
 # (cache_resource se) chalta hai, har rerun par nahi. inject_pwa_tags() halka
@@ -478,6 +508,16 @@ with st.sidebar:
     # Binding directly via key="menu" lets Streamlit own st.session_state.menu itself and
     # removes the desync - st.session_state.menu is already initialized above (line 270).
     st.radio("Menu Chuno", menu_options, key="menu", label_visibility="collapsed")
+
+    # REQUIREMENT #3: "Last Drive Sync" indicator - halka sa, kisi ko disturb
+    # nahi karta, bas user ko yaqeen dilata hai ke uska data Drive par ja
+    # chuka hai (aur kab). blocking_upload_if_changed() ise upar hi
+    # session_state mein set kar chuka hota hai jab bhi koi asal upload
+    # hoti hai.
+    _last_sync_time = st.session_state.get("_last_drive_sync_time")
+    if _last_sync_time:
+        _last_sync_size = st.session_state.get("_last_drive_sync_size", "")
+        st.caption(f"☁️ Last Drive Sync: {_last_sync_time}" + (f" | {_last_sync_size}" if _last_sync_size else ""))
 
 dragon_bg_base64 = get_base64_image(DRAGON_BG_FILE)
 if dragon_bg_base64:

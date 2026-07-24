@@ -99,6 +99,29 @@ def _local_db_row_count(local_db_path):
     return total
 
 
+def is_running_on_cloud():
+    """Streamlit Cloud (ya kisi bhi ephemeral-storage hosting) par chal rahi
+    hai ya user ke apne PC/localhost par - is ka andaza lagata hai taake UI
+    mein sirf wahi options dikhayein jo us jagah kaam karte hain (jaise
+    'Local Backup (Computer)' localhost par hi maayne rakhta hai, Cloud par
+    disk restart par mit jati hai is liye wahan dikhana hi ghalat-fehmi
+    paida karta hai). Kabhi crash nahi karta - pata na chale to False
+    (yani 'local/offline' maan leta hai, jo zyada permissive/safe hai)."""
+    try:
+        if os.getenv("STREAMLIT_RUNTIME"):
+            return True
+        # Streamlit Community Cloud apps hamesha isi tarah ke path se chalti hain
+        if os.path.exists("/mount/src") or os.getcwd().startswith("/mount/src"):
+            return True
+        # 'gdrive_token' Streamlit Secrets mein ho (na ke local drive_token.json
+        # file) - yeh bhi hosted/cloud deployment ka strong signal hai.
+        if _has_cloud_token():
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _backup_filename_for_today():
     """Aaj ki tareekh wala dated-backup naam - is naam ki file din mein
     kitni bhi baar banayi jaye, hamesha WAHI EK file overwrite hoti hai."""
@@ -824,11 +847,17 @@ def upload_main_db_to_drive(local_db_path="afzal_store.db"):
         return False, f"❌ Sync nahi ho saki: {e}"
 
 
-def download_main_db_if_newer(local_db_path="afzal_store.db"):
+def download_main_db_if_newer(local_db_path="afzal_store.db", force=False):
     """Agar Drive par maujood MAIN database, local copy se NAYI hai, to download
     kar ke local file replace kar deta hai. Returns (downloaded: bool, message: str).
     Kabhi bhi local file ko bina wajah overwrite nahi karta - sirf jab Drive
-    version genuinely newer ho."""
+    version genuinely newer ho.
+
+    force=True: 'newer hai ya nahi' wala mtime check bilkul skip kar ke seedha
+    download karta hai (sirf empty-db protection abhi bhi lागu rehta hai) - yeh
+    startup recovery ke liye hai jab local file khud khali/naya-bana hua ho
+    (jaise Streamlit Cloud par ephemeral restart ke baad) aur uska mtime "nayi"
+    dikhane laga ho, chahe usme koi asal data na ho."""
     if not is_available():
         return False, "Google Drive setup mukammal nahi hai."
     service = _get_drive_service()
@@ -860,12 +889,13 @@ def download_main_db_if_newer(local_db_path="afzal_store.db"):
             and _local_db_row_count(local_db_path) == 0
         )
 
-        if drive_time <= local_time and not local_is_stub:
+        if drive_time <= local_time and not local_is_stub and not force:
             return False, "Local database already up-to-date hai."
 
         # ULTA protection: agar Drive wali file khud choti/khali hai jabke local
         # mein waqai data maujood hai, to us khali Drive file se local ko kabhi
-        # overwrite nahi karte, chahe timestamp kuch bhi kahe.
+        # overwrite nahi karte, chahe timestamp ya force flag kuch bhi kahe -
+        # yeh protection force=True ke sath bhi hamesha lagu rehta hai.
         if _looks_empty(drive_size) and _looks_populated(local_size) and _local_db_row_count(local_db_path) > 0:
             return False, "Drive backup khali lag rahi hai - safety ke liye local data overwrite nahi kiya gaya."
 
