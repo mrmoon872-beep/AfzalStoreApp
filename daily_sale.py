@@ -80,9 +80,23 @@ def show_daily_sale(get_db=None):
         pass
 
     # ========================================================================
-    # 🕐 LIVE CLOCK + HIJRI DATE WIDGET
+    # 🕐 LIVE CLOCK (Asia/Karachi) + HIJRI DATE WIDGET
     # ========================================================================
-    now = datetime.now()
+    # BUG FIX: dashboard pehle server/container ka UTC time dikhata tha (jaise
+    # 07:53:34 AM jabke Karachi mein us waqt asal mein 12:53:34 PM tha, kyunke
+    # PKT = UTC+5). Ab hamesha Asia/Karachi time use hota hai, chahe server
+    # kahin bhi (kisi bhi UTC/other-timezone machine par) host ho.
+    try:
+        import pytz
+        karachi_tz = pytz.timezone("Asia/Karachi")
+        now = datetime.now(karachi_tz)
+    except Exception:
+        # pytz na mile (missing package) to bhi Karachi time sahi rahe -
+        # fixed UTC+5 offset use hota hai (Pakistan DST follow nahi karta,
+        # is liye yeh fallback hamesha durust rehta hai).
+        from datetime import timezone, timedelta
+        now = datetime.now(timezone.utc) + timedelta(hours=5)
+
     hijri_line = ""
     if HIJRI_AVAILABLE:
         try:
@@ -100,18 +114,51 @@ def show_daily_sale(get_db=None):
         st.title("📊 Afzal Store - Main Dashboard")
     
     with col_clock:
-        st.markdown(f'''
-            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+        import streamlit.components.v1 as components
+        # Server-rendered Karachi time/date, sirf pehle paint ke liye (JS load
+        # hone se pehle). Fir neeche wala script har second khud client-side
+        # tick karta hai - koi st.rerun loop nahi, dashboard 0.1 sec jaisa
+        # tez rehta hai.
+        initial_time = now.strftime("%I:%M:%S %p")
+        initial_date = now.strftime("%A, %d %b %Y")
+        clock_html = f'''
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
                         padding: 12px 20px; border-radius: 12px; text-align: center;
-                        box-shadow: 0 4px 15px rgba(0,0,0,0.2);">
+                        box-shadow: 0 4px 15px rgba(0,0,0,0.2); font-family: 'Source Sans Pro', sans-serif;">
                 <p style="margin:0; font-size:14px; color:#fff; font-weight:bold;">
-                    🕐 {now.strftime("%I:%M:%S %p")}
+                    🕐 <span id="karachiTime">{initial_time}</span>
                 </p>
                 <p style="margin:5px 0 0 0; font-size:11px; color:#E8EAF6;">
-                    {now.strftime("%d %b %Y")}{hijri_line}
+                    <span id="karachiDate">{initial_date}</span>{hijri_line}
                 </p>
             </div>
-        ''', unsafe_allow_html=True)
+            <script>
+            (function() {{
+                function updateKarachiClock() {{
+                    // Asia/Karachi (PKT) = UTC+5, saal bhar fixed (Pakistan DST
+                    // follow nahi karta) - is liye client ke apne timezone se
+                    // bilkul independent, hamesha sahi Karachi time milta hai.
+                    var offsetMs = 5 * 60 * 60 * 1000;
+                    var k = new Date(Date.now() + offsetMs);
+                    var days = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+                    var months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+                    var h = k.getUTCHours(), m = k.getUTCMinutes(), s = k.getUTCSeconds();
+                    var ampm = h >= 12 ? "PM" : "AM";
+                    var h12 = h % 12; if (h12 === 0) h12 = 12;
+                    var pad = function(n) {{ return n < 10 ? "0" + n : "" + n; }};
+                    var timeStr = pad(h12) + ":" + pad(m) + ":" + pad(s) + " " + ampm;
+                    var dateStr = days[k.getUTCDay()] + ", " + pad(k.getUTCDate()) + " " + months[k.getUTCMonth()] + " " + k.getUTCFullYear();
+                    var te = document.getElementById("karachiTime");
+                    var de = document.getElementById("karachiDate");
+                    if (te) te.innerText = timeStr;
+                    if (de) de.innerText = dateStr;
+                }}
+                updateKarachiClock();
+                setInterval(updateKarachiClock, 1000);
+            }})();
+            </script>
+        '''
+        components.html(clock_html, height=95)
     
     with col_notif:
         notif_count = len(notifications)
